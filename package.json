@@ -1,0 +1,22 @@
+{
+  "name": "js-visualizer-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @jsv/web",
+    "dev:server": "npm run dev -w @jsv/server",
+    "build": "npm run build -ws",
+    "test": "npm run test -ws",
+    "test:phase1": "npm run test:phase1 -w @jsv/protocol && npm run test:phase1 -w @jsv/explain",
+    "test:phase2": "npm run test:phase2 -w @jsv/web",
+    "test:phase3": "npm run test:phase3 -w @jsv/server",
+    "test:phase4": "npm run test:phase4 -w @jsv/web"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

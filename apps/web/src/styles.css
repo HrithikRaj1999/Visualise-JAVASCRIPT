@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+  background: radial-gradient(circle at 20% 10%, #f4e9d5 0%, #f7f5ef 30%, #ecf2f7 100%);
+  color: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
+}

@@ -1,0 +1,36 @@
+{
+  "name": "@jsv/web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "port": 5111,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:phase2": "vitest run src/lib/__tests__/reducer.test.ts",
+    "test:phase4": "vitest run src/lib/__tests__/examples.test.ts"
+  },
+  "dependencies": {
+    "@jsv/explain": "1.0.0",
+    "@jsv/protocol": "1.0.0",
+    "clsx": "^2.1.1",
+    "framer-motion": "^11.11.17",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sonner": "^2.0.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.5",
+    "vitest": "^3.0.5"
+  }
+}
