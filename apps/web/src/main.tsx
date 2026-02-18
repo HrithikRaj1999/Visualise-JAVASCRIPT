@@ -15,6 +15,27 @@ import {
 } from "@/lib/replay";
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
+import { DebugOverlay } from "./features/debug/DebugOverlay";
+import { DndProvider } from "./features/dnd/DndProvider";
+import { DropZone } from "./features/runtime/DropZone";
+import { DraggableToken } from "./features/dnd/DraggableToken";
+import {
+  createCallbackStartEvent,
+  createEnqueueMicrotaskEvent,
+  createEnqueueTaskEvent,
+} from "@/lib/interactive";
+import { tick } from "@/lib/simulation";
+import {
+  applyEvent,
+  type VisualizerEvent,
+  type SourceRange,
+} from "@jsv/protocol";
+import { FocusBar } from "./features/focus/FocusBar";
+import { GhostOverlay } from "./features/animation/GhostOverlay";
+import {
+  RectRegistryProvider,
+  useRectRegistry,
+} from "./features/animation/RectRegistry";
 import "./styles.css";
 
 // --- Types ---
@@ -22,6 +43,8 @@ type PhaseName = "timers" | "io" | "check" | "close";
 type QueueState = ReplayState["state"]["queues"];
 
 // --- Helper Components ---
+const generateId = (prefix: string) =>
+  `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
 function BoxHeader({ title, color }: { title: string; color: string }) {
   return (
@@ -42,127 +65,120 @@ function BoxHeader({ title, color }: { title: string; color: string }) {
 
 function TokenTransitionManager({
   state,
-  prevCallStackLen,
+  lastEvent,
 }: {
   state: ReplayState["state"];
-  prevCallStackLen: number;
+  lastEvent: VisualizerEvent | null;
 }) {
-  const containerRef = React.useRef<HTMLDivElement>(null);
-  const prevStateRef = React.useRef(state);
+  const { getRect } = useRectRegistry();
 
-  useGSAP(
-    () => {
-      const prev = prevStateRef.current;
+  useGSAP(() => {
+    if (!lastEvent) return;
 
-      // 1. Detect Call Stack Push (Code -> Stack)
-      if (state.callStack.length > prev.callStack.length) {
-        const newFrame = state.callStack[state.callStack.length - 1];
-        // Only animate if it's a real push, not a replay reset
-        if (state.callStack.length === prev.callStack.length + 1) {
-          animateTokenFlow("box-code", "box-stack", "#f97316", newFrame.label);
+    // Helper to animate flow
+    const animateFlow = (
+      fromId: string,
+      toId: string,
+      color: string,
+      label: string,
+    ) => {
+      const fromEl = document.getElementById(fromId);
+      const toEl = document.getElementById(toId);
+
+      // Fallback to registry if DOM not found immediately (e.g. Code Lines)
+      const fromRect = fromEl
+        ? fromEl.getBoundingClientRect()
+        : getRect(fromId);
+      const toRect = toEl ? toEl.getBoundingClientRect() : getRect(toId);
+
+      if (!fromRect || !toRect) return;
+
+      const token = document.createElement("div");
+      token.textContent = label;
+      token.className =
+        "fixed z-[9999] rounded px-2 py-1 text-[10px] font-bold uppercase shadow-lg border text-black flex items-center justify-center whitespace-nowrap";
+      token.style.backgroundColor = color;
+      token.style.borderColor = color;
+
+      // Centering logic
+      const startX = fromRect.left + fromRect.width / 2;
+      const startY = fromRect.top + fromRect.height / 2;
+      const endX = toRect.left + toRect.width / 2;
+      const endY = toRect.top + toRect.height / 2;
+
+      token.style.left = `${startX}px`;
+      token.style.top = `${startY}px`;
+      token.style.transform = "translate(-50%, -50%)";
+
+      document.body.appendChild(token);
+
+      gsap.to(token, {
+        x: endX - startX,
+        y: endY - startY,
+        duration: 0.8,
+        ease: "power2.inOut",
+        onComplete: () => {
+          token.remove();
+        },
+      });
+    };
+
+    switch (lastEvent.type) {
+      case "ENQUEUE_TASK":
+        if (lastEvent.queue === "timers" || lastEvent.queue === "io") {
+          animateFlow(
+            "box-webapi",
+            "box-taskqueue",
+            "#fbbf24",
+            lastEvent.label || "Task",
+          );
         }
-      }
+        break;
 
-      // 2. Detect Stack -> Web API (e.g. setTimeout called)
-      // Heuristic: If queue item added to WebAPI (timers/io), it came from active stack frame
-      const prevWeb = prev.queues.timers.length + prev.queues.io.length;
-      const currWeb = state.queues.timers.length + state.queues.io.length;
-      if (currWeb > prevWeb) {
-        animateTokenFlow("box-stack", "box-webapi", "#d946ef", "API Call");
-      }
+      case "DEQUEUE_TASK":
+        // Task Queue -> Stack
+        animateFlow(`token-${lastEvent.taskId}`, "box-stack", "#fbbf24", "Run");
+        break;
 
-      // 3. Detect Web API -> Queue (Timer done)
-      // Heuristic: Check if any macro task queue grew
-      const prevMacro =
-        prev.queues.timers.length +
-        prev.queues.io.length +
-        prev.queues.check.length +
-        prev.queues.close.length;
-      const currMacro =
-        state.queues.timers.length +
-        state.queues.io.length +
-        state.queues.check.length +
-        state.queues.close.length;
+      case "ENQUEUE_MICROTASK":
+        // Stack -> Microtask Queue (Promises)
+        // Or from Code? If we have source, GhostOverlay handles Code -> Box.
+        // This manager handles Box -> Box.
+        // But if it was triggered by code, GhostOverlay does it.
+        // Let's rely on GhostOverlay for Code -> Box.
+        // Only map Box -> Box here?
+        // Actually, the user wants "WebAPI -> TaskQueue" and "Queue -> Stack".
+        // ENQUEUE_MICROTASK usually comes from Stack (Promise.then).
+        // Let's animate Stack -> MicrotaskQueue if it didn't come from code source?
+        // But GhostOverlay handles the creation.
+        // Let's stick to Queue -> Stack and WebAPI -> Queue for this component.
+        break;
 
-      if (currMacro > prevMacro) {
-        animateTokenFlow("box-webapi", "box-taskqueue", "#ec4899", "Callback");
-      }
+      case "DEQUEUE_MICROTASK":
+        // Microtask Queue -> Stack
+        animateFlow(`token-${lastEvent.id}`, "box-stack", "#22d3ee", "Run");
+        break;
 
-      const prevMicro =
-        prev.queues.promise.length + prev.queues.nextTick.length;
-      const currMicro =
-        state.queues.promise.length + state.queues.nextTick.length;
-
-      if (currMicro > prevMicro) {
-        animateTokenFlow("box-stack", "box-microtask", "#22d3ee", "Microtask");
-      }
-
-      // 4. Detect Queue -> Stack (Event Loop Tick)
-      if (state.callStack.length > prev.callStack.length) {
-        // If stack grew and queue shrank?
-        if (currMacro < prevMacro || currMicro < prevMicro) {
-          animateTokenFlow("box-loop", "box-stack", "#fbbf24", "Run");
+      case "CALLBACK_START":
+        // Optional pulse
+        const stack = document.getElementById("box-stack");
+        if (stack) {
+          gsap.fromTo(
+            stack,
+            { boxShadow: "0 0 0px #f97316" },
+            {
+              boxShadow: "0 0 20px #f97316",
+              duration: 0.2,
+              yoyo: true,
+              repeat: 1,
+            },
+          );
         }
-      }
+        break;
+    }
+  }, [lastEvent]); // Trigger on every event change
 
-      prevStateRef.current = state;
-    },
-    { scope: containerRef, dependencies: [state] },
-  );
-
-  const animateTokenFlow = (
-    fromId: string,
-    toId: string,
-    color: string,
-    label: string,
-  ) => {
-    const fromEl = document.getElementById(fromId);
-    const toEl = document.getElementById(toId);
-    const container = containerRef.current;
-    if (!fromEl || !toEl || !container) return;
-
-    const token = document.createElement("div");
-    token.className =
-      "fixed z-[9999] rounded px-2 py-1 text-[10px] font-bold uppercase text-white shadow-lg flex items-center justify-center border";
-    token.style.backgroundColor = "#1e293b";
-    token.style.borderColor = color;
-    token.style.color = color;
-    token.innerText = label;
-
-    const fromRect = fromEl.getBoundingClientRect();
-    const toRect = toEl.getBoundingClientRect();
-
-    // Debugging
-    console.log(`Animating token: ${label} from ${fromId} to ${toId}`);
-
-    const startX = fromRect.left + fromRect.width / 2;
-    const startY = fromRect.top + fromRect.height / 2;
-
-    const endX = toRect.left + toRect.width / 2;
-    const endY = toRect.top + toRect.height / 2;
-
-    token.style.left = `${startX}px`;
-    token.style.top = `${startY}px`;
-
-    document.body.appendChild(token);
-
-    gsap.to(token, {
-      x: endX - startX,
-      y: endY - startY,
-      duration: 0.8,
-      ease: "power2.inOut",
-      onComplete: () => {
-        token.remove();
-      },
-    });
-  };
-
-  return (
-    <div
-      ref={containerRef}
-      className="fixed inset-0 pointer-events-none z-[100]"
-    />
-  );
+  return null;
 }
 
 // --- Modified Helper Components with IDs ---
@@ -199,11 +215,15 @@ function TaskToken({
   label,
   color,
   id,
+  source,
 }: {
   label: string;
   color: string;
   id: string;
+  source?: SourceRange;
 }) {
+  const { register, unregister } = useRectRegistry();
+
   return (
     <motion.div
       layoutId={id}
@@ -217,15 +237,28 @@ function TaskToken({
         borderLeftColor: color,
         color: "#e2e8f0",
       }}
+      data-source-line={source?.line}
+      ref={(el) => register(`token-${id}`, el)}
     >
       <span className="truncate">{label}</span>
+      {/* Remove from registry on unmount? 
+          Actually, we WANT it to persist for the 'from' animation. 
+          The registry might need a cleanup strategy, but for now let's keep it. 
+          If we unregister on unmount, getRect might fail if called AFTER unmount.
+      */}
     </motion.div>
   );
 }
 
 // --- Visualizer Components ---
 
-function CallStack({ stack }: { stack: { id: string; label: string }[] }) {
+function CallStack({
+  stack,
+  children,
+}: {
+  stack: { id: string; label: string; source?: SourceRange }[];
+  children?: React.ReactNode;
+}) {
   return (
     <NeonBox
       id="box-stack"
@@ -241,10 +274,12 @@ function CallStack({ stack }: { stack: { id: string; label: string }[] }) {
               id={frame.id}
               label={frame.label}
               color="#f97316" // Orange
+              source={frame.source}
             />
           ))}
         </AnimatePresence>
-        {stack.length === 0 && (
+        {children}
+        {stack.length === 0 && !children && (
           <div className="flex h-full items-center justify-center text-xs text-slate-600 italic">
             Stack Empty
           </div>
@@ -254,7 +289,19 @@ function CallStack({ stack }: { stack: { id: string; label: string }[] }) {
   );
 }
 
-function WebAPIs({ queues }: { queues: QueueState }) {
+function WebAPIs({
+  pendingItems,
+  children,
+}: {
+  pendingItems: {
+    id: string;
+    label: string;
+    type: "timer" | "io";
+    start: number;
+    duration: number;
+  }[];
+  children?: React.ReactNode;
+}) {
   // Combine all "async" waiting tasks that are NOT yet in the queues (conceptually).
   // For this visualizer's state model, items in 'queues.timers' are effectively "waiting" in WebAPIs until they expire?
   // Actually, standard Event Loop visuals show "Web APIs" as the place where `setTimeout` timer runs.
@@ -267,11 +314,6 @@ function WebAPIs({ queues }: { queues: QueueState }) {
   // The strictly "Web API" part (the timer ticking) happens before.
   // But for better visual match, let's put `timers`, `io`, etc here.
 
-  const items = [
-    ...queues.timers.map((t) => ({ ...t, type: "timer" })),
-    ...queues.io.map((t) => ({ ...t, type: "io" })),
-  ];
-
   return (
     <NeonBox
       id="box-webapi"
@@ -281,24 +323,32 @@ function WebAPIs({ queues }: { queues: QueueState }) {
     >
       <div className="grid grid-cols-2 gap-2 p-2 overflow-auto max-h-full">
         <AnimatePresence>
-          {items.map((item) => (
+          {pendingItems.map((item) => (
             <motion.div
               key={item.id}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9 }}
-              className="flex flex-col items-center justify-center rounded border border-slate-700 bg-slate-800 p-2 text-center"
+              className="flex flex-col items-center justify-center rounded border border-slate-700 bg-slate-800 p-2 text-center relative overflow-hidden"
             >
-              <div className="text-[10px] text-purple-400 uppercase font-bold">
+              <div className="text-[10px] text-purple-400 uppercase font-bold z-10">
                 {item.type}
               </div>
-              <div className="text-xs text-white truncate w-full">
+              <div className="text-xs text-white truncate w-full z-10">
                 {item.label}
               </div>
+              {/* Progress Bar */}
+              <motion.div
+                className="absolute bottom-0 left-0 h-1 bg-purple-500"
+                initial={{ width: "0%" }}
+                animate={{ width: "100%" }}
+                transition={{ duration: item.duration / 1000, ease: "linear" }}
+              />
             </motion.div>
           ))}
         </AnimatePresence>
-        {items.length === 0 && (
+        {children}
+        {pendingItems.length === 0 && !children && (
           <div className="col-span-2 flex h-full items-center justify-center text-xs text-slate-600 italic">
             Idle
           </div>
@@ -308,7 +358,13 @@ function WebAPIs({ queues }: { queues: QueueState }) {
   );
 }
 
-function TaskQueue({ tasks }: { tasks: { id: string; label: string }[] }) {
+function TaskQueue({
+  tasks,
+  children,
+}: {
+  tasks: { id: string; label: string; source?: SourceRange }[];
+  children?: React.ReactNode;
+}) {
   return (
     <NeonBox
       id="box-taskqueue"
@@ -322,16 +378,19 @@ function TaskQueue({ tasks }: { tasks: { id: string; label: string }[] }) {
             <motion.div
               key={task.id}
               layoutId={task.id}
-              initial={{ opacity: 0, x: 20 }}
+              initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="min-w-[100px] rounded border border-pink-500/30 bg-pink-500/10 px-2 py-2 text-center text-xs text-pink-200"
+              exit={{ opacity: 0, scale: 0.8 }}
+              className="mb-2 w-full rounded border border-pink-500/30 bg-pink-500/10 px-3 py-2 text-center text-xs text-pink-200 shadow-sm"
+              id={`token-${task.id}`}
+              data-source-line={task.source?.line}
             >
               {task.label}
             </motion.div>
           ))}
         </AnimatePresence>
-        {tasks.length === 0 && (
+        {children}
+        {tasks.length === 0 && !children && (
           <span className="text-xs text-slate-600 italic w-full text-center">
             Empty
           </span>
@@ -341,7 +400,13 @@ function TaskQueue({ tasks }: { tasks: { id: string; label: string }[] }) {
   );
 }
 
-function MicrotaskQueue({ tasks }: { tasks: { id: string; label: string }[] }) {
+function MicrotaskQueue({
+  tasks,
+  children,
+}: {
+  tasks: { id: string; label: string; source?: SourceRange }[];
+  children?: React.ReactNode;
+}) {
   return (
     <NeonBox
       id="box-microtask"
@@ -359,6 +424,8 @@ function MicrotaskQueue({ tasks }: { tasks: { id: string; label: string }[] }) {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, y: -20 }}
               className="min-w-[100px] rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-2 text-center text-xs text-cyan-200"
+              id={`token-${task.id}`}
+              data-source-line={task.source?.line}
             >
               {task.label}
             </motion.div>
@@ -421,22 +488,49 @@ function EventLoopSpinner({ active }: { active: boolean }) {
 
 function CodeHighlighter({
   code,
-  activeTaskLabel,
+  activeRange,
 }: {
   code: string;
-  activeTaskLabel: string | null;
+  activeRange?: SourceRange | undefined;
 }) {
   const lines = code.split("\n");
+  const { register } = useRectRegistry();
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (activeRange && scrollRef.current) {
+      // Find the active line element
+      const lineEl = scrollRef.current.children[
+        activeRange.line - 1
+      ] as HTMLElement;
+      if (lineEl) {
+        lineEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+  }, [activeRange]);
 
   return (
-    <div className="absolute inset-0 pointer-events-none font-mono text-xs md:text-sm p-4 leading-relaxed overflow-hidden">
+    <div
+      ref={scrollRef}
+      className="absolute inset-0 pointer-events-none font-mono text-xs md:text-sm p-4 leading-relaxed overflow-hidden"
+    >
       {lines.map((line, i) => {
-        const isActive =
-          activeTaskLabel && line.includes(activeTaskLabel.split(" ")[0]);
+        const lineNumber = i + 1;
+        // activeRange is 1-based
+        const isActive = activeRange && lineNumber === activeRange.line;
+        // Also support multi-line if needed, but for now simple line match
+
         return (
           <div
             key={i}
-            className={`w-full ${isActive ? "bg-yellow-500/20 shadow-[0_0_10px_rgba(234,179,8,0.2)]" : ""} px-1`}
+            ref={(el) => register(`code-line-${lineNumber}`, el)}
+            className={`w-full transition-all duration-500 rounded-sm
+                ${
+                  isActive
+                    ? "bg-yellow-500/40 shadow-[0_0_20px_rgba(234,179,8,0.4)] border-l-4 border-yellow-400 pl-2 scale-[1.01]"
+                    : "pl-1 border-l-0 border-transparent hover:bg-slate-800/30"
+                } 
+            `}
           >
             <span className="opacity-0">{line || " "}</span>
           </div>
@@ -453,9 +547,60 @@ function App() {
     createReplayState(examples[defaultExampleId].events),
   );
   const [autoPlay, setAutoPlay] = React.useState(false);
-  const [speedInput, setSpeedInput] = React.useState("800"); // Slower default for better vis
+  const [speedInput, setSpeedInput] = React.useState("1500");
+  const [resetKey, setResetKey] = React.useState(0);
 
   const speed = Number(speedInput) || 0;
+
+  // --- Keyboard Shortcuts ---
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      )
+        return;
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        setAutoPlay((prev) => !prev);
+      } else if (e.code === "KeyR") {
+        setAutoPlay(false);
+        setReplay(createReplayState(examples[exampleId].events));
+        setPendingWebAPIs([]);
+        setResetKey((prev) => prev + 1);
+        toast.info("Reset");
+      } else if (e.code === "ArrowRight") {
+        if (!autoPlay) {
+          setReplay((prev) => {
+            const next = stepForward(prev);
+            // If at end, try tick
+            if (next.pointer >= next.events.length) {
+              const newEvents = tick(next.state);
+              if (newEvents && newEvents.length > 0) {
+                let currentState = next.state;
+                const addedEvents = [...newEvents];
+                for (const evt of addedEvents) {
+                  currentState = applyEvent(currentState, evt);
+                }
+                return {
+                  ...next,
+                  events: [...next.events, ...addedEvents],
+                  pointer: next.pointer + addedEvents.length,
+                  state: currentState,
+                };
+              }
+            }
+            return next;
+          });
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [autoPlay, exampleId]);
 
   React.useEffect(() => {
     setCode(examples[exampleId].code);
@@ -474,8 +619,26 @@ function App() {
         setReplay((prev) => {
           const next = stepForward(prev);
           if (next.pointer >= next.events.length) {
-            cancelled = true;
-            setAutoPlay(false);
+            // End of history. Try to generate new event via tick()!
+            const newEvents = tick(next.state);
+            if (newEvents && newEvents.length > 0) {
+              let currentState = next.state;
+              const addedEvents = [...newEvents];
+
+              for (const evt of addedEvents) {
+                currentState = applyEvent(currentState, evt);
+              }
+
+              return {
+                ...next,
+                events: [...next.events, ...addedEvents],
+                pointer: next.pointer + addedEvents.length,
+                state: currentState,
+              };
+            } else {
+              cancelled = true;
+              setAutoPlay(false);
+            }
           }
           return next;
         });
@@ -492,7 +655,10 @@ function App() {
   const { state } = replay;
   const isRunning = autoPlay || state.callStack.length > 0;
 
-  // Derived state for the visualizer
+  // --- Derived State & Events ---
+  const lastEvent =
+    replay.pointer > 0 ? replay.events[replay.pointer - 1] : null;
+
   // Derived state for the visualizer
   const macroTasks = [
     ...state.queues.timers,
@@ -501,132 +667,343 @@ function App() {
     ...state.queues.close,
   ];
 
-  return (
-    <div className="flex h-screen flex-col bg-[#0d1117] text-slate-200 font-sans overflow-hidden">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between border-b border-slate-800 bg-[#010409] px-4 py-3 shadow-md z-50">
-        <div className="flex items-center gap-3">
-          <div className="h-3 w-3 rounded-full bg-red-500" />
-          <div className="h-3 w-3 rounded-full bg-yellow-500" />
-          <div className="h-3 w-3 rounded-full bg-green-500" />
-          <span className="ml-2 font-mono text-sm font-bold tracking-tight text-white">
-            JS VISUALIZER
-          </span>
-        </div>
-        <div className="flex items-center gap-4">
-          <select
-            className="bg-slate-800 text-xs text-white border border-slate-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-            value={exampleId}
-            onChange={(e) => setExampleId(e.target.value)}
-          >
-            {exampleList.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.title}
-              </option>
-            ))}
-          </select>
-          <div className="h-6 w-px bg-slate-700" />
-          <Button
-            className="bg-green-600 hover:bg-green-700 text-white h-7 text-xs px-3"
-            onClick={() => setAutoPlay(!autoPlay)}
-          >
-            {autoPlay ? "STOP" : "RUN"}
-          </Button>
-          <Button
-            className="border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 h-7 text-xs px-3 border"
-            onClick={() => {
-              setAutoPlay(false);
-              setReplay(createReplayState(examples[exampleId].events));
-            }}
-          >
-            RESET
-          </Button>
-        </div>
-      </div>
+  // --- DnD Logic (Interactive Mode) ---
+  const [pendingWebAPIs, setPendingWebAPIs] = React.useState<
+    {
+      id: string;
+      label: string;
+      type: "timer" | "io";
+      start: number;
+      duration: number;
+    }[]
+  >([]);
 
-      {/* Main Content Grid */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* LEFT COL: Code & Console (35%) */}
-        <div className="flex w-[35%] min-w-[350px] flex-col border-r border-slate-800 bg-[#0d1117]">
-          {/* Code Editor Area */}
-          <div id="box-code" className="relative flex-1 overflow-hidden">
-            <div className="absolute inset-0 overflow-auto custom-scrollbar">
-              <div className="min-h-full relative">
-                <CodeHighlighter
-                  code={code}
-                  activeTaskLabel={state.activeTaskId ?? null}
+  const scheduleEvent = (visualizerEvent: VisualizerEvent, label: string) => {
+    setReplay((prev) => {
+      const newState = applyEvent(prev.state, visualizerEvent);
+      return {
+        ...prev,
+        events: [...prev.events, visualizerEvent],
+        pointer: prev.pointer + 1,
+        state: newState,
+      };
+    });
+    // toast.success(`Scheduled ${label}`); // moved to caller
+  };
+
+  const handleScheduleTask = (paletteId: string, label: string) => {
+    // Simulate Async Delays
+    const duration =
+      paletteId === "palette-timeout"
+        ? 2000
+        : paletteId === "palette-fetch"
+          ? 1500
+          : 0;
+
+    if (duration > 0) {
+      const id = generateId("webapi");
+      const type = paletteId === "palette-timeout" ? "timer" : "io";
+
+      setPendingWebAPIs((prev) => [
+        ...prev,
+        { id, label, type, start: Date.now(), duration },
+      ]);
+      toast.info(`Scheduling ${label}...`);
+
+      setTimeout(() => {
+        setPendingWebAPIs((prev) => prev.filter((p) => p.id !== id));
+        if (paletteId === "palette-timeout") {
+          scheduleEvent(createEnqueueTaskEvent("timers", label), label);
+        } else {
+          scheduleEvent(createEnqueueTaskEvent("io", label), label);
+        }
+        toast.success(`Completed ${label}`);
+      }, duration);
+    } else {
+      // Immediate (Microtasks or direct drops)
+      if (paletteId === "palette-promise") {
+        scheduleEvent(createEnqueueMicrotaskEvent("promise", label), label);
+        toast.success(`Resolved ${label}`);
+      } else {
+        // Generic
+        scheduleEvent(createEnqueueTaskEvent("timers", label), label);
+        toast.success(`Scheduled ${label}`);
+      }
+    }
+  };
+
+  const handleDragEnd = (event: any) => {
+    const { active, over } = event;
+    if (!over) return;
+
+    if (active.id.toString().startsWith("palette-")) {
+      const label = active.data.current?.label || "Task";
+      const paletteId = active.id;
+      const boxId = over.id;
+
+      // If dropped on WebAPIs, trigger the "async" flow
+      if (boxId === "box-webapi") {
+        if (paletteId === "palette-timeout" || paletteId === "palette-fetch") {
+          handleScheduleTask(paletteId, label);
+          return;
+        }
+      }
+
+      // Direct drops bypass delay (simulating "already finished")
+      // Except for microtasks which are always immediate
+      let visualizerEvent: VisualizerEvent | null = null;
+
+      if (boxId === "box-taskqueue") {
+        visualizerEvent = createEnqueueTaskEvent("timers", label);
+      } else if (boxId === "box-microtask") {
+        if (paletteId === "palette-promise") {
+          visualizerEvent = createEnqueueMicrotaskEvent("promise", label);
+        }
+      } else if (boxId === "box-stack") {
+        visualizerEvent = createCallbackStartEvent(label);
+      }
+
+      if (visualizerEvent) {
+        scheduleEvent(visualizerEvent, label);
+        toast.success(`Scheduled ${label}`);
+      } else {
+        // If we dropped a promise on WebAPI?
+        if (boxId === "box-webapi" && paletteId === "palette-promise") {
+          toast.error("Promises don't use Web APIs thread");
+        } else {
+          toast.error("Invalid drop target");
+        }
+      }
+    }
+  };
+
+  return (
+    <RectRegistryProvider>
+      <DndProvider onDragEnd={handleDragEnd}>
+        <GhostOverlay
+          lastEvent={replay.events[replay.pointer - 1] || null}
+          resetKey={resetKey}
+        />
+        <div className="flex h-screen flex-col bg-[#0d1117] text-slate-200 font-sans overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-[#0d1117] to-[#0d1117]">
+          {/* Toolbar */}
+          <div className="flex items-center justify-between border-b border-slate-800 bg-[#010409]/80 backdrop-blur-md px-4 py-3 shadow-md z-50">
+            <div className="flex items-center gap-3">
+              <div className="h-3 w-3 rounded-full bg-red-500 shadow-custom-red" />
+              <div className="h-3 w-3 rounded-full bg-yellow-500 shadow-custom-yellow" />
+              <div className="h-3 w-3 rounded-full bg-green-500 shadow-custom-green" />
+              <span className="ml-2 font-mono text-sm font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
+                JS VISUALIZER
+              </span>
+            </div>
+            <div className="flex items-center gap-4">
+              <select
+                className="bg-slate-800 text-xs text-white border border-slate-700 rounded px-2 py-1 outline-none focus:border-blue-500"
+                value={exampleId}
+                onChange={(e) => setExampleId(e.target.value)}
+              >
+                {exampleList.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center gap-2 mr-4">
+                <span className="text-xs font-medium text-slate-400">
+                  Speed:
+                </span>
+                <input
+                  type="range"
+                  min="500"
+                  max="3000"
+                  step="100"
+                  value={speedInput}
+                  onChange={(e) => setSpeedInput(e.target.value)}
+                  className="w-24 accent-blue-500 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer"
                 />
-                <textarea
-                  className="w-full h-full min-h-[400px] bg-transparent p-4 font-mono text-xs md:text-sm text-emerald-300 outline-none resize-none leading-relaxed relative z-10"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  spellCheck={false}
-                />
+                <span className="text-xs text-slate-500 w-12 text-right">
+                  {speedInput}ms
+                </span>
+              </div>
+              <div className="h-6 w-px bg-slate-700" />
+              <Button
+                className="bg-green-600 hover:bg-green-700 text-white h-7 text-xs px-3"
+                onClick={() => setAutoPlay(!autoPlay)}
+              >
+                {autoPlay ? "STOP" : "RUN"}
+              </Button>
+              <Button
+                className="border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 h-7 text-xs px-3 border"
+                onClick={() => {
+                  setAutoPlay(false);
+                  setReplay(createReplayState(examples[exampleId].events));
+                  setResetKey((prev) => prev + 1);
+                }}
+              >
+                RESET
+              </Button>
+            </div>
+          </div>
+
+          {/* Main Content Grid */}
+
+          {/* Main Content Grid */}
+          <div className="flex flex-1 overflow-hidden flex-col">
+            <TokenTransitionManager state={state} lastEvent={lastEvent} />
+            <div className="flex flex-1 overflow-hidden">
+              {/* LEFT COL: Palette & Code (35%) */}
+              <div className="flex w-[35%] min-w-[350px] flex-col border-r border-slate-800 bg-[#0d1117]">
+                {/* Palette Area (New) */}
+                <div className="border-b border-slate-800 bg-[#161b22] p-4">
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-2">
+                    Event Sources
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <DraggableToken
+                      id="palette-timeout"
+                      label="setTimeout(0)"
+                      color="#d946ef"
+                      className="cursor-grab hover:bg-slate-800"
+                      onAction={() =>
+                        handleScheduleTask("palette-timeout", "setTimeout(0)")
+                      }
+                    />
+                    <DraggableToken
+                      id="palette-fetch"
+                      label="fetch()"
+                      color="#d946ef"
+                      className="cursor-grab hover:bg-slate-800"
+                      onAction={() =>
+                        handleScheduleTask("palette-fetch", "fetch()")
+                      }
+                    />
+                    <DraggableToken
+                      id="palette-promise"
+                      label="Promise.resolve"
+                      color="#22d3ee"
+                      className="cursor-grab hover:bg-slate-800"
+                      onAction={() =>
+                        handleScheduleTask("palette-promise", "Promise.resolve")
+                      }
+                    />
+                  </div>
+                </div>
+
+                {/* Code Editor Area */}
+                <div id="box-code" className="relative flex-1 overflow-hidden">
+                  <div className="absolute inset-0 overflow-auto custom-scrollbar">
+                    <div className="min-h-full relative">
+                      <CodeHighlighter
+                        code={code}
+                        activeRange={state.focus?.activeRange}
+                      />
+                      <textarea
+                        className="w-full h-full min-h-[400px] bg-transparent p-4 font-mono text-xs md:text-sm text-emerald-300 outline-none resize-none leading-relaxed relative z-10"
+                        value={code}
+                        onChange={(e) => setCode(e.target.value)}
+                        spellCheck={false}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Console Area */}
+                <div className="h-[30%] min-h-[200px] border-t border-slate-800 bg-[#010409] flex flex-col">
+                  <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1 text-xs font-semibold text-slate-500 uppercase tracking-widest">
+                    Console
+                  </div>
+                  <div className="flex-1 overflow-auto p-4 font-mono text-xs space-y-2">
+                    {state.logs.length === 0 && (
+                      <span className="text-slate-600 italic">No output</span>
+                    )}
+                    {state.logs.map((log, i) => (
+                      <div key={i} className="flex gap-2">
+                        <span
+                          className={
+                            log.level === "error"
+                              ? "text-red-500"
+                              : log.level === "warn"
+                                ? "text-yellow-500"
+                                : "text-slate-500"
+                          }
+                        >
+                          {">"}
+                        </span>
+                        <div>
+                          <span
+                            className={
+                              log.level === "error"
+                                ? "text-red-400"
+                                : log.level === "warn"
+                                  ? "text-yellow-400"
+                                  : "text-slate-300"
+                            }
+                          >
+                            {log.args
+                              .map((arg) =>
+                                typeof arg === "object"
+                                  ? JSON.stringify(arg)
+                                  : String(arg),
+                              )
+                              .join(" ")}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                    <div
+                      ref={(el) => el?.scrollIntoView({ behavior: "smooth" })}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* RIGHT COL: Visualizer (65%) */}
+              <div className="flex-1 overflow-hidden bg-[#0d1117] p-6">
+                <div className="grid h-full w-full grid-cols-2 grid-rows-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)] gap-6">
+                  {/* 1. Call Stack (Top Left) */}
+                  <div className="row-span-1">
+                    <DropZone id="box-stack" className="h-full">
+                      <CallStack stack={state.callStack} />
+                    </DropZone>
+                  </div>
+
+                  {/* 2. Web APIs (Top Right) */}
+                  <div className="row-span-1">
+                    <DropZone id="box-webapi" className="h-full">
+                      <WebAPIs pendingItems={pendingWebAPIs} />
+                    </DropZone>
+                  </div>
+
+                  {/* 3. Event Loop (Middle Left) */}
+                  <div className="row-span-1 flex items-center justify-center py-4">
+                    <EventLoopSpinner active={isRunning} />
+                  </div>
+
+                  {/* 4. Task Queue (Middle Right) */}
+                  <div className="row-span-1">
+                    <DropZone id="box-taskqueue" className="h-full">
+                      <TaskQueue tasks={macroTasks} />
+                    </DropZone>
+                  </div>
+
+                  {/* 5. Microtask Queue (Bottom) */}
+                  <div className="col-start-2 row-start-3">
+                    <DropZone id="box-microtask" className="h-full">
+                      <MicrotaskQueue
+                        tasks={[
+                          ...state.queues.promise,
+                          ...state.queues.nextTick,
+                        ]}
+                      />
+                    </DropZone>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-
-          {/* Console Area */}
-          <div className="h-[30%] min-h-[200px] border-t border-slate-800 bg-[#010409] flex flex-col">
-            <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1 text-xs font-semibold text-slate-500 uppercase tracking-widest">
-              Console
-            </div>
-            <div className="flex-1 overflow-auto p-4 font-mono text-xs space-y-2">
-              {replay.toasts.length === 0 && (
-                <span className="text-slate-600 italic">...</span>
-              )}
-              {replay.toasts.map((t, i) => (
-                <div key={i} className="flex gap-2">
-                  <span className="text-slate-500">{">"}</span>
-                  <div>
-                    <span className="text-slate-300">{t.title}</span>
-                    {t.description && (
-                      <span className="ml-2 text-slate-500">
-                        // {t.description}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <div ref={(el) => el?.scrollIntoView({ behavior: "smooth" })} />
-            </div>
-          </div>
+          <DebugOverlay />
         </div>
-
-        {/* RIGHT COL: Visualizer (65%) */}
-        <div className="flex-1 overflow-hidden bg-[#0d1117] p-6">
-          <div className="grid h-full w-full grid-cols-2 grid-rows-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)] gap-6">
-            {/* 1. Call Stack (Top Left) */}
-            <div className="row-span-1">
-              <CallStack stack={state.callStack} />
-            </div>
-
-            {/* 2. Web APIs (Top Right) */}
-            <div className="row-span-1">
-              <WebAPIs queues={state.queues} />
-            </div>
-
-            {/* 3. Event Loop (Middle Left) */}
-            <div className="row-span-1 flex items-center justify-center py-4">
-              <EventLoopSpinner active={isRunning} />
-            </div>
-
-            {/* 4. Task Queue (Middle Right) */}
-            <div className="row-span-1">
-              <TaskQueue tasks={macroTasks} />
-            </div>
-
-            {/* 5. Microtask Queue (Bottom) -> Spanning or Just Right? Reference had Micro below Task */}
-            {/* We'll put it in col 2, row 3 */}
-            <div className="col-start-2 row-start-3">
-              <MicrotaskQueue
-                tasks={[...state.queues.promise, ...state.queues.nextTick]}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+      </DndProvider>
+    </RectRegistryProvider>
   );
 }
 

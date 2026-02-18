@@ -1,69 +1,149 @@
-import { WebSocketServer } from 'ws';
-import { Worker } from 'node:worker_threads';
-import { transform } from 'esbuild';
-import type { VisualizerEvent } from '@jsv/protocol';
-import ts from 'typescript';
+import { WebSocketServer } from "ws";
+import { Worker } from "node:worker_threads";
+import { transform } from "esbuild";
+import type { VisualizerEvent } from "@jsv/protocol";
+import ts from "typescript";
 
 type ClientCommand =
-  | { type: 'SUBSCRIBE' }
-  | { type: 'RUN_CODE'; payload: { code: string; language?: 'js' | 'ts'; maxEvents?: number } };
+  | { type: "SUBSCRIBE" }
+  | {
+      type: "RUN_CODE";
+      payload: { code: string; language?: "js" | "ts"; maxEvents?: number };
+    };
 
-async function transpileCode(code: string, language: 'js' | 'ts'): Promise<{ js: string; diagnostics: VisualizerEvent[] }> {
-  if (language === 'js') {
-    return { js: code, diagnostics: [] };
-  }
+// --- AST Transformer for Source Mapping ---
+import fs from "node:fs";
 
-  const tsDiagnostics = ts.transpileModule(code, {
+function createTransformer(): ts.TransformerFactory<ts.SourceFile> {
+  return (context) => {
+    return (sourceFile) => {
+      const visitor: ts.Visitor = (node) => {
+        if (ts.isCallExpression(node)) {
+          let targetName = "";
+
+          if (ts.isIdentifier(node.expression)) {
+            targetName = node.expression.text;
+          } else if (ts.isPropertyAccessExpression(node.expression)) {
+            // Handle process.nextTick, Promise.resolve().then
+            if (ts.isIdentifier(node.expression.name)) {
+              const prop = node.expression.name.text;
+              if (ts.isIdentifier(node.expression.expression as any)) {
+                const obj = (node.expression.expression as any).text;
+                if (obj === "process" && prop === "nextTick")
+                  targetName = "process.nextTick";
+                if (obj === "console") return node; // Skip console
+              } else if (prop === "then") {
+                // Promise.then detection is loose but acceptable for this MVP
+                targetName = "Promise.then";
+              }
+            }
+          }
+
+          if (
+            [
+              "setTimeout",
+              "setInterval",
+              "setImmediate",
+              "process.nextTick",
+              "queueMicrotask",
+              "Promise.then",
+            ].includes(targetName) &&
+            node.arguments.length > 0
+          ) {
+            fs.appendFileSync(
+              "debug.log",
+              `Transformer matched: ${targetName}\n`,
+            );
+            // Identify the callback argument position
+            let callbackIndex = 0; // Default first arg
+            if (["setTimeout", "setInterval"].includes(targetName)) {
+              callbackIndex = 0;
+            }
+            // For Promise.then(onFulfilled, onRejected), we might want both?
+            // MVP: just wrap the first one.
+
+            if (
+              node.arguments.length > callbackIndex &&
+              (ts.isArrowFunction(node.arguments[callbackIndex]) ||
+                ts.isFunctionExpression(node.arguments[callbackIndex]) ||
+                ts.isIdentifier(node.arguments[callbackIndex]))
+            ) {
+              const callback = node.arguments[callbackIndex];
+              const { line, character } =
+                sourceFile.getLineAndCharacterOfPosition(node.getStart());
+
+              // Inject __bindSource(callback, line, col)
+              const wrapped = ts.factory.createCallExpression(
+                ts.factory.createIdentifier("__bindSource"),
+                undefined,
+                [
+                  callback,
+                  ts.factory.createNumericLiteral(line + 1),
+                  ts.factory.createNumericLiteral(character + 1),
+                ],
+              );
+
+              const newArgs = [...node.arguments];
+              newArgs[callbackIndex] = wrapped;
+
+              return ts.factory.updateCallExpression(
+                node,
+                node.expression,
+                node.typeArguments,
+                newArgs,
+              );
+            }
+          }
+        }
+        return ts.visitEachChild(node, visitor, context);
+      };
+      return ts.visitNode(sourceFile, visitor) as ts.SourceFile;
+    };
+  };
+}
+
+async function transpileCode(
+  code: string,
+  language: "js" | "ts",
+): Promise<{ js: string; diagnostics: VisualizerEvent[] }> {
+  // Always use TS transpileModule to apply our transformer
+  const result = ts.transpileModule(code, {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.CommonJS,
-      strict: true,
+      strict: false, // Loose for snippets
+      allowJs: true,
+      sourceMap: false,
     },
     reportDiagnostics: true,
+    transformers: {
+      before: [createTransformer()],
+    },
   });
 
-  let js = '';
-  try {
-    const result = await transform(code, {
-      loader: 'ts',
-      format: 'cjs',
-      sourcemap: true,
-      target: 'node20',
-    });
-    js = result.code;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to transpile TypeScript.';
-    return {
-      js: '',
-      diagnostics: [
+  const diagnostics: VisualizerEvent[] = result.diagnostics?.length
+    ? [
         {
-          type: 'TS_DIAGNOSTIC',
+          type: "TS_DIAGNOSTIC",
           ts: Date.now(),
-          diagnostics: [{ message, line: 1, col: 1 }],
+          diagnostics: result.diagnostics.map((diagnostic) => {
+            const position = diagnostic.file?.getLineAndCharacterOfPosition(
+              diagnostic.start ?? 0,
+            );
+            return {
+              message: ts.flattenDiagnosticMessageText(
+                diagnostic.messageText,
+                "\n",
+              ),
+              line: (position?.line ?? 0) + 1,
+              col: (position?.character ?? 0) + 1,
+            };
+          }),
         },
-      ],
-    };
-  }
+      ]
+    : [];
 
-  const diagnostics: VisualizerEvent[] =
-    tsDiagnostics.diagnostics?.length
-      ? [
-          {
-            type: 'TS_DIAGNOSTIC',
-            ts: Date.now(),
-            diagnostics: tsDiagnostics.diagnostics.map((diagnostic) => {
-              const position = diagnostic.file?.getLineAndCharacterOfPosition(diagnostic.start ?? 0);
-              return {
-                message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'),
-                line: (position?.line ?? 0) + 1,
-                col: (position?.character ?? 0) + 1,
-              };
-            }),
-          },
-        ]
-      : [];
-
-  return { js, diagnostics };
+  return { js: result.outputText, diagnostics };
 }
 
 function createWorkerScript(js: string, maxEvents: number): string {
@@ -85,13 +165,23 @@ const emit = (event) => {
   parentPort.postMessage(event);
 };
 
+// --- Source Binding Helper ---
+const __bindSource = (fn, line, col) => {
+  if (typeof fn === 'function') {
+    fn.source = { line, col };
+  }
+  return fn;
+};
+
 const wrapTask = (queue, label, callback) => {
   const taskId = queue + ':' + (++counter);
-  emit({ type: 'ENQUEUE_TASK', queue, taskId, label, ts: Date.now() });
+  const source = callback.source; // Extract source
+  emit({ type: 'ENQUEUE_TASK', queue, taskId, label, source, ts: Date.now() });
+  
   return (...args) => {
     emit({ type: 'PHASE_ENTER', phase: queue === 'io' ? 'io' : queue, ts: Date.now() });
     emit({ type: 'DEQUEUE_TASK', queue, taskId, ts: Date.now() });
-    emit({ type: 'CALLBACK_START', taskId, label, ts: Date.now() });
+    emit({ type: 'CALLBACK_START', taskId, label, source, ts: Date.now() });
     try {
       callback(...args);
     } finally {
@@ -105,7 +195,8 @@ const wrapTask = (queue, label, callback) => {
 
 const wrapMicrotask = (queue, label, callback) => {
   const id = queue + ':' + (++counter);
-  emit({ type: 'ENQUEUE_MICROTASK', queue, id, label, ts: Date.now() });
+  const source = callback.source;
+  emit({ type: 'ENQUEUE_MICROTASK', queue, id, label, source, ts: Date.now() });
   return () => {
     emit({ type: 'DEQUEUE_MICROTASK', queue, id, ts: Date.now() });
     callback();
@@ -130,18 +221,19 @@ EventEmitter.prototype.on = function patchedOn(event, listener) {
 };
 
 const context = {
+  __bindSource, // Expose helper
   console: {
     log: (...args) => emit({ type: 'CONSOLE', level: 'log', args, ts: Date.now() }),
     warn: (...args) => emit({ type: 'CONSOLE', level: 'warn', args, ts: Date.now() }),
     error: (...args) => emit({ type: 'CONSOLE', level: 'error', args, ts: Date.now() }),
   },
-  setTimeout: (cb, ms, ...args) => setTimeout(wrapTask('timers', 'setTimeout callback', () => cb(...args)), ms),
-  setInterval: (cb, ms, ...args) => setInterval(wrapTask('timers', 'setInterval callback', () => cb(...args)), ms),
-  setImmediate: (cb, ...args) => setImmediate(wrapTask('check', 'setImmediate callback', () => cb(...args))),
+  setTimeout: (cb, ms, ...args) => setTimeout(wrapTask('timers', 'setTimeout callback', cb), ms, ...args),
+  setInterval: (cb, ms, ...args) => setInterval(wrapTask('timers', 'setInterval callback', cb), ms, ...args),
+  setImmediate: (cb, ...args) => setImmediate(wrapTask('check', 'setImmediate callback', cb), ...args),
   queueMicrotask: (cb) => queueMicrotask(wrapMicrotask('promise', 'queueMicrotask callback', cb)),
   process: {
     ...process,
-    nextTick: (cb, ...args) => process.nextTick(wrapMicrotask('nextTick', 'process.nextTick callback', () => cb(...args))),
+    nextTick: (cb, ...args) => process.nextTick(wrapMicrotask('nextTick', 'process.nextTick callback', cb), ...args),
   },
   require: (moduleId) => {
     if (moduleId === 'node:fs' || moduleId === 'fs') return patchedFs;
@@ -170,31 +262,37 @@ try {
 `;
 }
 
-function startWorker(js: string, send: (event: VisualizerEvent) => void, maxEvents: number): Worker {
+function startWorker(
+  js: string,
+  send: (event: VisualizerEvent) => void,
+  maxEvents: number,
+): Worker {
   const script = createWorkerScript(js, maxEvents);
   const worker = new Worker(script, { eval: true });
-  worker.on('message', (event: VisualizerEvent) => send(event));
+  worker.on("message", (event: VisualizerEvent) => send(event));
   return worker;
 }
 
 export function createServer(port = 8080) {
   const wss = new WebSocketServer({ port });
 
-  wss.on('listening', () => {
+  wss.on("listening", () => {
     console.log(`[server] WebSocket listening on ws://localhost:${port}`);
   });
 
-  wss.on('error', (error: NodeJS.ErrnoException) => {
-    console.error('[server] Failed to start WebSocket server:', error);
-    if (error.code === 'EADDRINUSE') {
-      console.error(`[server] Port ${port} is already in use. Stop the old process or run with PORT=<new-port>.`);
+  wss.on("error", (error: NodeJS.ErrnoException) => {
+    console.error("[server] Failed to start WebSocket server:", error);
+    if (error.code === "EADDRINUSE") {
+      console.error(
+        `[server] Port ${port} is already in use. Stop the old process or run with PORT=<new-port>.`,
+      );
       process.exit(1);
     }
   });
 
-  wss.on('connection', (socket) => {
-    console.log('[server] Client connected');
-    socket.on('message', async (raw) => {
+  wss.on("connection", (socket) => {
+    console.log("[server] Client connected");
+    socket.on("message", async (raw) => {
       let command: ClientCommand;
       try {
         command = JSON.parse(raw.toString()) as ClientCommand;
@@ -202,27 +300,34 @@ export function createServer(port = 8080) {
         return;
       }
 
-      if (command.type === 'SUBSCRIBE') {
+      if (command.type === "SUBSCRIBE") {
         return;
       }
 
-      if (command.type !== 'RUN_CODE') {
+      if (command.type !== "RUN_CODE") {
         return;
       }
 
-      const language = command.payload.language ?? 'js';
+      const language = command.payload.language ?? "js";
       const maxEvents = command.payload.maxEvents ?? 2000;
-      const { js, diagnostics } = await transpileCode(command.payload.code, language);
+      const { js, diagnostics } = await transpileCode(
+        command.payload.code,
+        language,
+      );
 
       diagnostics.forEach((event) => socket.send(JSON.stringify(event)));
       if (!js.trim()) {
-        socket.send(JSON.stringify({ type: 'SCRIPT_END', ts: Date.now() }));
+        socket.send(JSON.stringify({ type: "SCRIPT_END", ts: Date.now() }));
         return;
       }
 
-      const worker = startWorker(js, (event) => socket.send(JSON.stringify(event)), maxEvents);
-      worker.once('exit', () => {
-        socket.send(JSON.stringify({ type: 'SCRIPT_END', ts: Date.now() }));
+      const worker = startWorker(
+        js,
+        (event) => socket.send(JSON.stringify(event)),
+        maxEvents,
+      );
+      worker.once("exit", () => {
+        socket.send(JSON.stringify({ type: "SCRIPT_END", ts: Date.now() }));
       });
     });
   });
@@ -230,17 +335,17 @@ export function createServer(port = 8080) {
   return wss;
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== "test") {
   const port = Number(process.env.PORT ?? 8080);
   console.log(`[server] Starting backend on port ${port}...`);
   const server = createServer(port);
   const shutdown = () => {
     server.close(() => {
-      console.log('[server] Shutdown complete');
+      console.log("[server] Shutdown complete");
       process.exit(0);
     });
   };
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
