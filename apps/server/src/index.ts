@@ -180,7 +180,20 @@ function startWorker(js: string, send: (event: VisualizerEvent) => void, maxEven
 export function createServer(port = 8080) {
   const wss = new WebSocketServer({ port });
 
+  wss.on('listening', () => {
+    console.log(`[server] WebSocket listening on ws://localhost:${port}`);
+  });
+
+  wss.on('error', (error: NodeJS.ErrnoException) => {
+    console.error('[server] Failed to start WebSocket server:', error);
+    if (error.code === 'EADDRINUSE') {
+      console.error(`[server] Port ${port} is already in use. Stop the old process or run with PORT=<new-port>.`);
+      process.exit(1);
+    }
+  });
+
   wss.on('connection', (socket) => {
+    console.log('[server] Client connected');
     socket.on('message', async (raw) => {
       let command: ClientCommand;
       try {
@@ -218,5 +231,16 @@ export function createServer(port = 8080) {
 }
 
 if (process.env.NODE_ENV !== 'test') {
-  createServer(8080);
+  const port = Number(process.env.PORT ?? 8080);
+  console.log(`[server] Starting backend on port ${port}...`);
+  const server = createServer(port);
+  const shutdown = () => {
+    server.close(() => {
+      console.log('[server] Shutdown complete');
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }

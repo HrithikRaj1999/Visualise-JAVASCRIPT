@@ -12,10 +12,12 @@
     "test:phase4": "vitest run src/lib/__tests__/examples.test.ts"
   },
   "dependencies": {
+    "@gsap/react": "^2.1.2",
     "@jsv/explain": "1.0.0",
     "@jsv/protocol": "1.0.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.11.17",
+    "gsap": "^3.14.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sonner": "^2.0.1"

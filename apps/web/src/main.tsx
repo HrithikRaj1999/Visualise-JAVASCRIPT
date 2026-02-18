@@ -1,214 +1,447 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { Toaster, toast } from "sonner";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { examples } from "@jsv/protocol";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import {
   createReplayState,
   defaultExampleId,
   exampleList,
   moveToNextPhase,
+  stepForward,
   type ReplayState,
 } from "@/lib/replay";
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
 import "./styles.css";
 
-function QueuePanel({
-  title,
-  items,
-}: {
-  title: string;
-  items: Array<{ id: string; label: string }>;
-}) {
-  return (
-    <Card>
-      <CardHeader className="flex items-center justify-between">
-        <span>{title}</span>
-        <Badge>{String(items.length)}</Badge>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {items.length === 0 ? (
-          <div className="text-xs text-slate-500">Empty</div>
-        ) : null}
-        {items.map((item) => (
-          <div
-            key={item.id}
-            className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs"
-          >
-            {item.label}
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
-
-function CircularProgress({ value, label }: { value: number; label: string }) {
-  const clamped = Math.max(0, Math.min(1, value));
-  const angle = clamped * 360;
-  return (
-    <div className="flex items-center gap-3">
-      <div
-        className="h-14 w-14 rounded-full"
-        style={{
-          background: `conic-gradient(#0f766e ${angle}deg, #dbeafe ${angle}deg)`,
-          display: "grid",
-          placeItems: "center",
-        }}
-      >
-        <div className="h-10 w-10 rounded-full bg-white text-center text-[10px] font-semibold leading-10 text-slate-700">
-          {Math.round(clamped * 100)}%
-        </div>
-      </div>
-      <div className="text-xs text-slate-700">{label}</div>
-    </div>
-  );
-}
-
-function ToastPulse({ toastKey }: { toastKey: string }) {
-  const [progress, setProgress] = React.useState(0);
-  React.useEffect(() => {
-    let mounted = true;
-    let frame = 0;
-    const tick = () => {
-      if (!mounted) return;
-      frame += 1;
-      const next = Math.min(100, frame * 5);
-      setProgress(next);
-      if (next < 100) {
-        window.setTimeout(tick, 24);
-      }
-    };
-    tick();
-    return () => {
-      mounted = false;
-    };
-  }, [toastKey]);
-
-  return <CircularProgress value={progress / 100} label="Toast progress" />;
-}
-
-function Walkthrough({ onClose }: { onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-900/70 p-4">
-      <div className="mx-auto max-w-3xl rounded-xl bg-white p-5 shadow-xl">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-bold">How to Use</h2>
-          <Button onClick={onClose}>Close</Button>
-        </div>
-        <div className="space-y-2 text-sm text-slate-700">
-          <p>
-            <strong>Editor:</strong> write or edit code (left half).
-          </p>
-          <p>
-            <strong>Example selector:</strong> load built-in scenarios.
-          </p>
-          <p>
-            <strong>Move to next phase:</strong> advances to next event-loop
-            phase boundary.
-          </p>
-          <p>
-            <strong>Auto play + speed:</strong> runs automatically with your
-            entered delay in milliseconds. `0` means immediate.
-          </p>
-          <p>
-            <strong>Queues:</strong> timers, io, check, close, nextTick, promise
-            show pending work.
-          </p>
-          <p>
-            <strong>Macro/Micro boxes:</strong> quick totals for all macrotasks
-            and microtasks.
-          </p>
-          <p>
-            <strong>Call stack:</strong> shows currently active callback frames.
-          </p>
-          <p>
-            <strong>Explanation log + toast:</strong> readable narration for
-            each important event.
-          </p>
-          <p>
-            <strong>Circular progress:</strong> shows overall replay completion
-            progress.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
+// --- Types ---
 type PhaseName = "timers" | "io" | "check" | "close";
-type DiagramQueues = ReplayState["state"]["queues"];
+type QueueState = ReplayState["state"]["queues"];
 
-const phasePositions: Record<PhaseName, { x: number; y: number; label: string }> = {
-  timers: { x: 50, y: 12, label: "timers queue" },
-  io: { x: 86, y: 50, label: "I/O queue" },
-  check: { x: 50, y: 88, label: "check queue" },
-  close: { x: 14, y: 50, label: "close queue" },
-};
+// --- Helper Components ---
 
-function EventLoopDiagram({
-  phase,
-  queues,
+function BoxHeader({ title, color }: { title: string; color: string }) {
+  return (
+    <div
+      className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-md border px-3 py-1 text-xs font-bold uppercase tracking-wider text-white shadow-sm"
+      style={{
+        backgroundColor: "#1e293b",
+        borderColor: color,
+        boxShadow: `0 0 10px ${color}40`,
+      }}
+    >
+      {title}
+    </div>
+  );
+}
+
+// --- Animation Logic ---
+
+function TokenTransitionManager({
+  state,
+  prevCallStackLen,
 }: {
-  phase: PhaseName | "idle";
-  queues: DiagramQueues;
+  state: ReplayState["state"];
+  prevCallStackLen: number;
 }) {
-  const activePhase = phase === "idle" ? "timers" : phase;
-  const microCount = queues.nextTick.length + queues.promise.length;
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const prevStateRef = React.useRef(state);
+
+  useGSAP(
+    () => {
+      const prev = prevStateRef.current;
+
+      // 1. Detect Call Stack Push (Code -> Stack)
+      if (state.callStack.length > prev.callStack.length) {
+        const newFrame = state.callStack[state.callStack.length - 1];
+        // Only animate if it's a real push, not a replay reset
+        if (state.callStack.length === prev.callStack.length + 1) {
+          animateTokenFlow("box-code", "box-stack", "#f97316", newFrame.label);
+        }
+      }
+
+      // 2. Detect Stack -> Web API (e.g. setTimeout called)
+      // Heuristic: If queue item added to WebAPI (timers/io), it came from active stack frame
+      const prevWeb = prev.queues.timers.length + prev.queues.io.length;
+      const currWeb = state.queues.timers.length + state.queues.io.length;
+      if (currWeb > prevWeb) {
+        animateTokenFlow("box-stack", "box-webapi", "#d946ef", "API Call");
+      }
+
+      // 3. Detect Web API -> Queue (Timer done)
+      // Heuristic: Check if any macro task queue grew
+      const prevMacro =
+        prev.queues.timers.length +
+        prev.queues.io.length +
+        prev.queues.check.length +
+        prev.queues.close.length;
+      const currMacro =
+        state.queues.timers.length +
+        state.queues.io.length +
+        state.queues.check.length +
+        state.queues.close.length;
+
+      if (currMacro > prevMacro) {
+        animateTokenFlow("box-webapi", "box-taskqueue", "#ec4899", "Callback");
+      }
+
+      const prevMicro =
+        prev.queues.promise.length + prev.queues.nextTick.length;
+      const currMicro =
+        state.queues.promise.length + state.queues.nextTick.length;
+
+      if (currMicro > prevMicro) {
+        animateTokenFlow("box-stack", "box-microtask", "#22d3ee", "Microtask");
+      }
+
+      // 4. Detect Queue -> Stack (Event Loop Tick)
+      if (state.callStack.length > prev.callStack.length) {
+        // If stack grew and queue shrank?
+        if (currMacro < prevMacro || currMicro < prevMicro) {
+          animateTokenFlow("box-loop", "box-stack", "#fbbf24", "Run");
+        }
+      }
+
+      prevStateRef.current = state;
+    },
+    { scope: containerRef, dependencies: [state] },
+  );
+
+  const animateTokenFlow = (
+    fromId: string,
+    toId: string,
+    color: string,
+    label: string,
+  ) => {
+    const fromEl = document.getElementById(fromId);
+    const toEl = document.getElementById(toId);
+    const container = containerRef.current;
+    if (!fromEl || !toEl || !container) return;
+
+    const token = document.createElement("div");
+    token.className =
+      "fixed z-[9999] rounded px-2 py-1 text-[10px] font-bold uppercase text-white shadow-lg flex items-center justify-center border";
+    token.style.backgroundColor = "#1e293b";
+    token.style.borderColor = color;
+    token.style.color = color;
+    token.innerText = label;
+
+    const fromRect = fromEl.getBoundingClientRect();
+    const toRect = toEl.getBoundingClientRect();
+
+    // Debugging
+    console.log(`Animating token: ${label} from ${fromId} to ${toId}`);
+
+    const startX = fromRect.left + fromRect.width / 2;
+    const startY = fromRect.top + fromRect.height / 2;
+
+    const endX = toRect.left + toRect.width / 2;
+    const endY = toRect.top + toRect.height / 2;
+
+    token.style.left = `${startX}px`;
+    token.style.top = `${startY}px`;
+
+    document.body.appendChild(token);
+
+    gsap.to(token, {
+      x: endX - startX,
+      y: endY - startY,
+      duration: 0.8,
+      ease: "power2.inOut",
+      onComplete: () => {
+        token.remove();
+      },
+    });
+  };
 
   return (
-    <div className="relative mx-auto h-[360px] w-full max-w-[760px] overflow-hidden rounded-xl bg-slate-950 text-slate-100">
-      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <circle cx="50" cy="50" r="38" fill="none" stroke="#334155" strokeWidth="0.8" />
-      </svg>
+    <div
+      ref={containerRef}
+      className="fixed inset-0 pointer-events-none z-[100]"
+    />
+  );
+}
 
-      {(Object.keys(phasePositions) as PhaseName[]).map((phaseKey) => {
-        const position = phasePositions[phaseKey];
-        const count = queues[phaseKey].length;
-        const isActive = activePhase === phaseKey;
+// --- Modified Helper Components with IDs ---
 
+function NeonBox({
+  id,
+  title,
+  color,
+  children,
+  className = "",
+}: {
+  id?: string;
+  title: string;
+  color: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      id={id}
+      className={`relative rounded-xl border-2 bg-slate-900/50 p-4 ${className}`}
+      style={{
+        borderColor: color,
+        boxShadow: `0 0 15px ${color}20, inset 0 0 20px ${color}10`,
+      }}
+    >
+      <BoxHeader title={title} color={color} />
+      {children}
+    </div>
+  );
+}
+
+function TaskToken({
+  label,
+  color,
+  id,
+}: {
+  label: string;
+  color: string;
+  id: string;
+}) {
+  return (
+    <motion.div
+      layoutId={id}
+      initial={{ scale: 0.8, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      exit={{ scale: 0.8, opacity: 0 }}
+      className="mb-2 flex items-center justify-between rounded-md border border-l-4 px-3 py-2 text-xs font-medium shadow-sm transition-shadow"
+      style={{
+        backgroundColor: "#1e293b",
+        borderColor: "#334155",
+        borderLeftColor: color,
+        color: "#e2e8f0",
+      }}
+    >
+      <span className="truncate">{label}</span>
+    </motion.div>
+  );
+}
+
+// --- Visualizer Components ---
+
+function CallStack({ stack }: { stack: { id: string; label: string }[] }) {
+  return (
+    <NeonBox
+      id="box-stack"
+      title="Call Stack"
+      color="#f97316"
+      className="h-full min-h-[250px] overflow-hidden"
+    >
+      <div className="flex h-full flex-col-reverse justify-start overflow-auto p-2">
+        <AnimatePresence mode="popLayout">
+          {stack.map((frame) => (
+            <TaskToken
+              key={frame.id}
+              id={frame.id}
+              label={frame.label}
+              color="#f97316" // Orange
+            />
+          ))}
+        </AnimatePresence>
+        {stack.length === 0 && (
+          <div className="flex h-full items-center justify-center text-xs text-slate-600 italic">
+            Stack Empty
+          </div>
+        )}
+      </div>
+    </NeonBox>
+  );
+}
+
+function WebAPIs({ queues }: { queues: QueueState }) {
+  // Combine all "async" waiting tasks that are NOT yet in the queues (conceptually).
+  // For this visualizer's state model, items in 'queues.timers' are effectively "waiting" in WebAPIs until they expire?
+  // Actually, standard Event Loop visuals show "Web APIs" as the place where `setTimeout` timer runs.
+  // In `jsv/protocol`, `queues.timers` contains items whose timer has expired and are ready to run?
+  // Let's assume for now we visualize the "Timers" queue as essentially having come from Web APIs.
+  // A better representation might be strictly active timers.
+  // Since we don't have "pending timers" in the visualizer state (only ready ones in queue),
+  // we'll visualize the *ready* Io/Timer/Check/Close tasks here for now, OR purely visual.
+  // Wait, `queues.timers` ARE the callbacks ready to execute.
+  // The strictly "Web API" part (the timer ticking) happens before.
+  // But for better visual match, let's put `timers`, `io`, etc here.
+
+  const items = [
+    ...queues.timers.map((t) => ({ ...t, type: "timer" })),
+    ...queues.io.map((t) => ({ ...t, type: "io" })),
+  ];
+
+  return (
+    <NeonBox
+      id="box-webapi"
+      title="Web APIs"
+      color="#d946ef"
+      className="h-full min-h-[200px]"
+    >
+      <div className="grid grid-cols-2 gap-2 p-2 overflow-auto max-h-full">
+        <AnimatePresence>
+          {items.map((item) => (
+            <motion.div
+              key={item.id}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="flex flex-col items-center justify-center rounded border border-slate-700 bg-slate-800 p-2 text-center"
+            >
+              <div className="text-[10px] text-purple-400 uppercase font-bold">
+                {item.type}
+              </div>
+              <div className="text-xs text-white truncate w-full">
+                {item.label}
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+        {items.length === 0 && (
+          <div className="col-span-2 flex h-full items-center justify-center text-xs text-slate-600 italic">
+            Idle
+          </div>
+        )}
+      </div>
+    </NeonBox>
+  );
+}
+
+function TaskQueue({ tasks }: { tasks: { id: string; label: string }[] }) {
+  return (
+    <NeonBox
+      id="box-taskqueue"
+      title="Task Queue"
+      color="#ec4899"
+      className="h-full min-h-[120px]"
+    >
+      <div className="flex h-full items-center gap-2 overflow-x-auto p-2">
+        <AnimatePresence mode="popLayout">
+          {tasks.map((task) => (
+            <motion.div
+              key={task.id}
+              layoutId={task.id}
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="min-w-[100px] rounded border border-pink-500/30 bg-pink-500/10 px-2 py-2 text-center text-xs text-pink-200"
+            >
+              {task.label}
+            </motion.div>
+          ))}
+        </AnimatePresence>
+        {tasks.length === 0 && (
+          <span className="text-xs text-slate-600 italic w-full text-center">
+            Empty
+          </span>
+        )}
+      </div>
+    </NeonBox>
+  );
+}
+
+function MicrotaskQueue({ tasks }: { tasks: { id: string; label: string }[] }) {
+  return (
+    <NeonBox
+      id="box-microtask"
+      title="Microtask Queue"
+      color="#22d3ee"
+      className="h-full min-h-[120px]"
+    >
+      <div className="flex h-full items-center gap-2 overflow-x-auto p-2">
+        <AnimatePresence mode="popLayout">
+          {tasks.map((task) => (
+            <motion.div
+              key={task.id}
+              layoutId={task.id}
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="min-w-[100px] rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-2 text-center text-xs text-cyan-200"
+            >
+              {task.label}
+            </motion.div>
+          ))}
+        </AnimatePresence>
+        {tasks.length === 0 && (
+          <span className="text-xs text-slate-600 italic w-full text-center">
+            Empty
+          </span>
+        )}
+      </div>
+    </NeonBox>
+  );
+}
+
+function EventLoopSpinner({ active }: { active: boolean }) {
+  const spinnerRef = React.useRef<HTMLDivElement>(null);
+
+  useGSAP(() => {
+    if (active) {
+      gsap.to(spinnerRef.current, {
+        rotation: 360,
+        duration: 1,
+        repeat: -1,
+        ease: "linear",
+      });
+    } else {
+      gsap.to(spinnerRef.current, { rotation: 0, duration: 0.5 });
+    }
+  }, [active]);
+
+  return (
+    <NeonBox
+      id="box-loop"
+      title="Event Loop"
+      color="#fbbf24"
+      className="flex h-[180px] w-full flex-col items-center justify-center gap-4"
+    >
+      <div ref={spinnerRef} className="relative h-16 w-16">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#fbbf24"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-full w-full"
+        >
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+      </div>
+      <div className="text-center text-xs text-amber-200">
+        {active ? "Running" : "Idle"}
+      </div>
+    </NeonBox>
+  );
+}
+
+// --- Main Layout Components ---
+
+function CodeHighlighter({
+  code,
+  activeTaskLabel,
+}: {
+  code: string;
+  activeTaskLabel: string | null;
+}) {
+  const lines = code.split("\n");
+
+  return (
+    <div className="absolute inset-0 pointer-events-none font-mono text-xs md:text-sm p-4 leading-relaxed overflow-hidden">
+      {lines.map((line, i) => {
+        const isActive =
+          activeTaskLabel && line.includes(activeTaskLabel.split(" ")[0]);
         return (
-          <motion.div
-            key={phaseKey}
-            className="absolute -translate-x-1/2 -translate-y-1/2 rounded-md border px-3 py-2 text-[11px]"
-            style={{ left: `${position.x}%`, top: `${position.y}%` }}
-            initial={false}
-            animate={{
-              borderColor: isActive ? "#14b8a6" : "#475569",
-              backgroundColor: isActive ? "rgba(15,118,110,0.30)" : "rgba(15,23,42,0.78)",
-              scale: isActive ? 1.08 : 1,
-              boxShadow: count > 0 ? "0 0 0 1px rgba(20,184,166,0.35)" : "0 0 0 1px rgba(71,85,105,0.2)",
-            }}
-            transition={{ duration: 0.35 }}
+          <div
+            key={i}
+            className={`w-full ${isActive ? "bg-yellow-500/20 shadow-[0_0_10px_rgba(234,179,8,0.2)]" : ""} px-1`}
           >
-            <div className="text-[10px] uppercase tracking-wide text-slate-300">{phaseKey}</div>
-            <div>{position.label}</div>
-            <div className="text-teal-300">{count} pending</div>
-          </motion.div>
+            <span className="opacity-0">{line || " "}</span>
+          </div>
         );
       })}
-
-      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md border border-slate-500 bg-slate-900/90 px-3 py-2 text-[11px]">
-        <div className="text-[10px] uppercase tracking-wide text-slate-300">microtasks</div>
-        <div>nextTick: {queues.nextTick.length}</div>
-        <div>promise: {queues.promise.length}</div>
-        <div className="text-teal-300">total: {microCount}</div>
-      </div>
-
-      <motion.div
-        className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-teal-400 shadow-[0_0_14px_rgba(45,212,191,0.85)]"
-        initial={false}
-        animate={{
-          left: `${phasePositions[activePhase].x}%`,
-          top: `${phasePositions[activePhase].y}%`,
-        }}
-        transition={{ type: "spring", stiffness: 170, damping: 20 }}
-      />
-
-      <div className="absolute left-3 top-3 text-[11px] text-slate-300">event loop cycle</div>
-      <div className="absolute right-3 top-3 text-[11px] text-teal-300">phase: {phase}</div>
     </div>
   );
 }
@@ -220,337 +453,178 @@ function App() {
     createReplayState(examples[defaultExampleId].events),
   );
   const [autoPlay, setAutoPlay] = React.useState(false);
-  const [speedInput, setSpeedInput] = React.useState("400");
-  const [showWalkthrough, setShowWalkthrough] = React.useState(false);
-  const handledToastCountRef = React.useRef(0);
+  const [speedInput, setSpeedInput] = React.useState("800"); // Slower default for better vis
 
-  const speed =
-    Number.isFinite(Number(speedInput)) && Number(speedInput) >= 0
-      ? Number(speedInput)
-      : 0;
+  const speed = Number(speedInput) || 0;
 
   React.useEffect(() => {
     setCode(examples[exampleId].code);
     setReplay(createReplayState(examples[exampleId].events));
     setAutoPlay(false);
-    handledToastCountRef.current = 0;
   }, [exampleId]);
 
   React.useEffect(() => {
     if (!autoPlay) return;
-
-    let timer: number | undefined;
+    let timer: number;
     let cancelled = false;
 
     const scheduleNext = () => {
-      const delay = speed >= 0 ? speed : 0;
       timer = window.setTimeout(() => {
         if (cancelled) return;
-
-        let reachedEnd = false;
         setReplay((prev) => {
-          if (prev.pointer >= prev.events.length) {
-            reachedEnd = true;
-            return prev;
-          }
-
-          const next = moveToNextPhase(prev);
+          const next = stepForward(prev);
           if (next.pointer >= next.events.length) {
-            reachedEnd = true;
+            cancelled = true;
+            setAutoPlay(false);
           }
-
           return next;
         });
-
-        if (reachedEnd) {
-          cancelled = true;
-          setAutoPlay(false);
-          return;
-        }
-
-        scheduleNext();
-      }, delay);
+        if (!cancelled) scheduleNext();
+      }, speed);
     };
-
     scheduleNext();
     return () => {
       cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
+      clearTimeout(timer);
     };
   }, [autoPlay, speed]);
 
-  React.useEffect(() => {
-    if (replay.toasts.length <= handledToastCountRef.current) {
-      return;
-    }
+  const { state } = replay;
+  const isRunning = autoPlay || state.callStack.length > 0;
 
-    const latestToast = replay.toasts[replay.toasts.length - 1];
-    if (latestToast) {
-      toast(latestToast.title, {
-        description: latestToast.description,
-        duration: 2600,
-      });
-    }
-    handledToastCountRef.current = replay.toasts.length;
-  }, [replay.toasts]);
-
-  const state = replay.state;
-  const phase = state.phase ?? "idle";
-  const macroCount =
-    state.queues.timers.length +
-    state.queues.io.length +
-    state.queues.check.length +
-    state.queues.close.length;
-  const microCount = state.queues.nextTick.length + state.queues.promise.length;
-  const progress =
-    replay.events.length === 0 ? 0 : replay.pointer / replay.events.length;
-  const latestToast = replay.toasts[replay.toasts.length - 1];
-  const stackHistory = state.timeline
-    .filter(
-      (event) =>
-        event.type === "CALLBACK_START" || event.type === "CALLBACK_END",
-    )
-    .slice(-8);
+  // Derived state for the visualizer
+  // Derived state for the visualizer
+  const macroTasks = [
+    ...state.queues.timers,
+    ...state.queues.io,
+    ...state.queues.check,
+    ...state.queues.close,
+  ];
 
   return (
-    <div className="min-h-screen p-4 md:p-6">
-      <Toaster richColors position="top-right" visibleToasts={5} />
-      {showWalkthrough ? (
-        <Walkthrough onClose={() => setShowWalkthrough(false)} />
-      ) : null}
+    <div className="flex h-screen flex-col bg-[#0d1117] text-slate-200 font-sans overflow-hidden">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between border-b border-slate-800 bg-[#010409] px-4 py-3 shadow-md z-50">
+        <div className="flex items-center gap-3">
+          <div className="h-3 w-3 rounded-full bg-red-500" />
+          <div className="h-3 w-3 rounded-full bg-yellow-500" />
+          <div className="h-3 w-3 rounded-full bg-green-500" />
+          <span className="ml-2 font-mono text-sm font-bold tracking-tight text-white">
+            JS VISUALIZER
+          </span>
+        </div>
+        <div className="flex items-center gap-4">
+          <select
+            className="bg-slate-800 text-xs text-white border border-slate-700 rounded px-2 py-1 outline-none focus:border-blue-500"
+            value={exampleId}
+            onChange={(e) => setExampleId(e.target.value)}
+          >
+            {exampleList.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.title}
+              </option>
+            ))}
+          </select>
+          <div className="h-6 w-px bg-slate-700" />
+          <Button
+            className="bg-green-600 hover:bg-green-700 text-white h-7 text-xs px-3"
+            onClick={() => setAutoPlay(!autoPlay)}
+          >
+            {autoPlay ? "STOP" : "RUN"}
+          </Button>
+          <Button
+            className="border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 h-7 text-xs px-3 border"
+            onClick={() => {
+              setAutoPlay(false);
+              setReplay(createReplayState(examples[exampleId].events));
+            }}
+          >
+            RESET
+          </Button>
+        </div>
+      </div>
 
-      <div className="mx-auto flex flex-col gap-4">
-        <Card>
-          <CardHeader className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-lg font-bold">
-                Node Event Loop Visualizer
-              </div>
-              <div className="text-xs text-slate-600">
-                Phase pointer: {phase}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                className="bg-slate-700 hover:bg-slate-800"
-                onClick={() => setShowWalkthrough(true)}
-              >
-                Walkthrough
-              </Button>
-              <select
-                className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
-                value={exampleId}
-                onChange={(e) => setExampleId(e.target.value)}
-              >
-                {exampleList.map((item: { id: string; title: string }) => (
-                  <option key={item.id} value={item.id}>
-                    {item.title}
-                  </option>
-                ))}
-              </select>
-              <Button
-                onClick={() => {
-                  setAutoPlay(false);
-                  handledToastCountRef.current = 0;
-                  setReplay(createReplayState(examples[exampleId].events));
-                }}
-              >
-                Reset
-              </Button>
-              <Button
-                onClick={() => {
-                  setAutoPlay(false);
-                  setReplay((prev) => moveToNextPhase(prev));
-                }}
-              >
-                Move to next phase
-              </Button>
-              <Button
-                onClick={() => {
-                  if (replay.pointer >= replay.events.length) {
-                    handledToastCountRef.current = 0;
-                    setReplay(createReplayState(examples[exampleId].events));
-                  }
-                  setAutoPlay(true);
-                }}
-              >
-                Run all
-              </Button>
-              <Button onClick={() => setAutoPlay((v) => !v)}>
-                {autoPlay ? "Stop auto" : "Auto run"}
-              </Button>
-              <label className="text-xs">
-                Speed (ms)
-                <input
-                  className="ml-1 w-24 rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={speedInput}
-                  onChange={(e) => setSpeedInput(e.target.value)}
+      {/* Main Content Grid */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* LEFT COL: Code & Console (35%) */}
+        <div className="flex w-[35%] min-w-[350px] flex-col border-r border-slate-800 bg-[#0d1117]">
+          {/* Code Editor Area */}
+          <div id="box-code" className="relative flex-1 overflow-hidden">
+            <div className="absolute inset-0 overflow-auto custom-scrollbar">
+              <div className="min-h-full relative">
+                <CodeHighlighter
+                  code={code}
+                  activeTaskLabel={state.activeTaskId ?? null}
                 />
-              </label>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="text-xs text-slate-600">
-              Diagram animates the currently active phase and queue movement.
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>Animated Event Loop Diagram</CardHeader>
-          <CardContent>
-            <EventLoopDiagram phase={phase} queues={state.queues} />
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <Card>
-            <CardHeader>Editor (Half Page)</CardHeader>
-            <CardContent>
-              <textarea
-                className="h-80 w-full rounded bg-slate-950 p-3 font-mono text-xs text-emerald-200"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-              />
-              <div className="mt-2 text-xs text-slate-600">
-                {examples[exampleId].learn}
+                <textarea
+                  className="w-full h-full min-h-[400px] bg-transparent p-4 font-mono text-xs md:text-sm text-emerald-300 outline-none resize-none leading-relaxed relative z-10"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  spellCheck={false}
+                />
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <QueuePanel title="Timers Queue" items={state.queues.timers} />
-            <QueuePanel title="I/O Queue" items={state.queues.io} />
-            <QueuePanel title="Check Queue" items={state.queues.check} />
-            <QueuePanel title="Close Queue" items={state.queues.close} />
-            <QueuePanel title="nextTick Queue" items={state.queues.nextTick} />
-            <QueuePanel title="Promise Queue" items={state.queues.promise} />
+          {/* Console Area */}
+          <div className="h-[30%] min-h-[200px] border-t border-slate-800 bg-[#010409] flex flex-col">
+            <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1 text-xs font-semibold text-slate-500 uppercase tracking-widest">
+              Console
+            </div>
+            <div className="flex-1 overflow-auto p-4 font-mono text-xs space-y-2">
+              {replay.toasts.length === 0 && (
+                <span className="text-slate-600 italic">...</span>
+              )}
+              {replay.toasts.map((t, i) => (
+                <div key={i} className="flex gap-2">
+                  <span className="text-slate-500">{">"}</span>
+                  <div>
+                    <span className="text-slate-300">{t.title}</span>
+                    {t.description && (
+                      <span className="ml-2 text-slate-500">
+                        // {t.description}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div ref={(el) => el?.scrollIntoView({ behavior: "smooth" })} />
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <Card>
-            <CardHeader>Call Stack</CardHeader>
-            <CardContent className="space-y-2">
-              <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs">
-                Active task: {state.activeTaskId ?? "none"}
-              </div>
-              {state.callStack.length === 0 ? (
-                <div className="text-xs text-slate-500">Empty</div>
-              ) : null}
-              {state.callStack.map((frame: { id: string; label: string }) => (
-                <div
-                  key={frame.id}
-                  className="rounded border border-slate-200 px-2 py-1 text-xs"
-                >
-                  {frame.label}
-                </div>
-              ))}
-              <div className="mt-3 text-xs font-semibold text-slate-700">
-                Recent stack activity
-              </div>
-              {stackHistory.length === 0 ? (
-                <div className="text-xs text-slate-500">
-                  No stack activity yet.
-                </div>
-              ) : null}
-              {stackHistory.map((event, index) => (
-                <div
-                  key={`${event.type}-${event.ts}-${index}`}
-                  className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs"
-                >
-                  {event.type === "CALLBACK_START" ? "Start" : "End"}:{" "}
-                  {"taskId" in event ? event.taskId : "unknown"}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+        {/* RIGHT COL: Visualizer (65%) */}
+        <div className="flex-1 overflow-hidden bg-[#0d1117] p-6">
+          <div className="grid h-full w-full grid-cols-2 grid-rows-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)] gap-6">
+            {/* 1. Call Stack (Top Left) */}
+            <div className="row-span-1">
+              <CallStack stack={state.callStack} />
+            </div>
 
-          <Card>
-            <CardHeader>Explanation Log + Latest Toast</CardHeader>
-            <CardContent className="max-h-80 space-y-2 overflow-auto">
-              {latestToast ? (
-                <div className="rounded border border-teal-300 bg-teal-50 px-3 py-2">
-                  <div className="text-sm font-semibold text-teal-900">
-                    {latestToast.title}
-                  </div>
-                  <div className="text-xs text-teal-800">
-                    {latestToast.description}
-                  </div>
-                </div>
-              ) : null}
-              {replay.toasts.length === 0 ? (
-                <div className="text-xs text-slate-500">
-                  No events explained yet.
-                </div>
-              ) : null}
-              {replay.toasts.map(
-                (entry: {
-                  id: string;
-                  ts: number;
-                  title: string;
-                  description: string;
-                }) => (
-                  <div
-                    key={entry.id + entry.ts}
-                    className="rounded border border-slate-200 bg-slate-50 px-2 py-1"
-                  >
-                    <div className="text-xs font-semibold">{entry.title}</div>
-                    <div className="text-xs text-slate-700">
-                      {entry.description}
-                    </div>
-                  </div>
-                ),
-              )}
-            </CardContent>
-          </Card>
+            {/* 2. Web APIs (Top Right) */}
+            <div className="row-span-1">
+              <WebAPIs queues={state.queues} />
+            </div>
+
+            {/* 3. Event Loop (Middle Left) */}
+            <div className="row-span-1 flex items-center justify-center py-4">
+              <EventLoopSpinner active={isRunning} />
+            </div>
+
+            {/* 4. Task Queue (Middle Right) */}
+            <div className="row-span-1">
+              <TaskQueue tasks={macroTasks} />
+            </div>
+
+            {/* 5. Microtask Queue (Bottom) -> Spanning or Just Right? Reference had Micro below Task */}
+            {/* We'll put it in col 2, row 3 */}
+            <div className="col-start-2 row-start-3">
+              <MicrotaskQueue
+                tasks={[...state.queues.promise, ...state.queues.nextTick]}
+              />
+            </div>
+          </div>
         </div>
-
-        <Card>
-          <CardHeader>Runtime Metrics</CardHeader>
-          <CardContent className="flex flex-wrap items-center gap-4">
-            <CircularProgress value={progress} label="Replay completion" />
-            {autoPlay ? (
-              <div className="flex items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-800">
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-teal-600 border-t-transparent" />
-                Running at {speed}ms
-              </div>
-            ) : null}
-            {latestToast ? (
-              <ToastPulse toastKey={latestToast.id + latestToast.ts} />
-            ) : null}
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
-              <div className="font-semibold">Macro task queue</div>
-              <div>{macroCount} pending</div>
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
-              <div className="font-semibold">Micro task queue</div>
-              <div>{microCount} pending</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>Diagnostics</CardHeader>
-          <CardContent className="space-y-2">
-            {state.diagnostics.length === 0 ? (
-              <div className="text-xs text-slate-500">
-                No TypeScript diagnostics.
-              </div>
-            ) : null}
-            {state.diagnostics.map((diag) => (
-              <div
-                key={`${diag.line}:${diag.col}:${diag.message}`}
-                className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs"
-              >
-                {diag.line}:{diag.col} {diag.message}
-              </div>
-            ))}
-          </CardContent>
-        </Card>
       </div>
     </div>
   );
