@@ -150,6 +150,13 @@ export function applyEvent(
       return next;
     case "ENQUEUE_TASK":
       next.queues[event.queue].push(queueItemFromTask(event));
+      if (event.source) {
+        next.focus = {
+          ...next.focus,
+          activeBox: "CODE",
+          activeRange: event.source,
+        };
+      }
       return next;
     case "DEQUEUE_TASK": {
       const task = removeQueueItem(next.queues[event.queue], event.taskId);
@@ -178,6 +185,13 @@ export function applyEvent(
       return next;
     case "ENQUEUE_MICROTASK":
       next.queues[event.queue].push(queueItemFromMicrotask(event));
+      if (event.source) {
+        next.focus = {
+          ...next.focus,
+          activeBox: "CODE",
+          activeRange: event.source,
+        };
+      }
       return next;
     case "DEQUEUE_MICROTASK":
       removeQueueItem(next.queues[event.queue], event.id);

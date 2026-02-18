@@ -96,9 +96,10 @@ function TokenTransitionManager({
       const token = document.createElement("div");
       token.textContent = label;
       token.className =
-        "fixed z-[9999] rounded px-2 py-1 text-[10px] font-bold uppercase shadow-lg border text-black flex items-center justify-center whitespace-nowrap";
+        "fixed z-[9999] rounded-md px-3 py-1.5 text-xs font-bold uppercase shadow-[0_0_15px_rgba(0,0,0,0.5)] border-2 text-white flex items-center justify-center whitespace-nowrap backdrop-blur-sm";
       token.style.backgroundColor = color;
-      token.style.borderColor = color;
+      token.style.borderColor = "rgba(255,255,255,0.4)";
+      token.style.textShadow = "0 1px 2px rgba(0,0,0,0.8)";
 
       // Centering logic
       const startX = fromRect.left + fromRect.width / 2;
@@ -108,17 +109,32 @@ function TokenTransitionManager({
 
       token.style.left = `${startX}px`;
       token.style.top = `${startY}px`;
-      token.style.transform = "translate(-50%, -50%)";
+      token.style.transform = "translate(-50%, -50%) scale(0.5)";
 
       document.body.appendChild(token);
 
+      // Intro
+      gsap.to(token, {
+        scale: 1,
+        duration: 0.3,
+        ease: "back.out(1.7)",
+      });
+
+      // Move
       gsap.to(token, {
         x: endX - startX,
         y: endY - startY,
-        duration: 0.8,
-        ease: "power2.inOut",
+        duration: 1.2,
+        ease: "power3.inOut",
         onComplete: () => {
-          token.remove();
+          // Arrival effect (persistence)
+          gsap.to(token, {
+            scale: 1.5,
+            opacity: 0,
+            duration: 0.4,
+            ease: "power1.out",
+            onComplete: () => token.remove(),
+          });
         },
       });
     };
@@ -358,30 +374,39 @@ function WebAPIs({
   );
 }
 
-function TaskQueue({
+function VerticalQueue({
+  title,
+  color,
   tasks,
-  children,
+  className = "",
 }: {
+  title: string;
+  color: string;
   tasks: { id: string; label: string; source?: SourceRange }[];
-  children?: React.ReactNode;
+  className?: string; // Allow overrides
 }) {
   return (
     <NeonBox
-      id="box-taskqueue"
-      title="Task Queue"
-      color="#ec4899"
-      className="h-full min-h-[120px]"
+      id={`box-${title.toLowerCase().replace(/\s/g, "")}`}
+      title={title}
+      color={color}
+      className={`min-h-[80px] flex flex-col ${className}`}
     >
-      <div className="flex h-full items-center gap-2 overflow-x-auto p-2">
+      <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
         <AnimatePresence mode="popLayout">
           {tasks.map((task) => (
             <motion.div
               key={task.id}
               layoutId={task.id}
-              initial={{ opacity: 0, x: -20 }}
+              initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              className="mb-2 w-full rounded border border-pink-500/30 bg-pink-500/10 px-3 py-2 text-center text-xs text-pink-200 shadow-sm"
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="w-full rounded border px-2 py-1 text-center text-[10px] font-medium shadow-sm truncate"
+              style={{
+                borderColor: `${color}40`, // 25% opacity
+                backgroundColor: `${color}10`, // 6% opacity
+                color: `${color}ee`,
+              }}
               id={`token-${task.id}`}
               data-source-line={task.source?.line}
             >
@@ -389,11 +414,10 @@ function TaskQueue({
             </motion.div>
           ))}
         </AnimatePresence>
-        {children}
-        {tasks.length === 0 && !children && (
-          <span className="text-xs text-slate-600 italic w-full text-center">
+        {tasks.length === 0 && (
+          <div className="text-[10px] text-slate-700 italic text-center py-2 h-full flex items-center justify-center">
             Empty
-          </span>
+          </div>
         )}
       </div>
     </NeonBox>
@@ -660,12 +684,7 @@ function App() {
     replay.pointer > 0 ? replay.events[replay.pointer - 1] : null;
 
   // Derived state for the visualizer
-  const macroTasks = [
-    ...state.queues.timers,
-    ...state.queues.io,
-    ...state.queues.check,
-    ...state.queues.close,
-  ];
+  const queueState = state.queues;
 
   // --- DnD Logic (Interactive Mode) ---
   const [pendingWebAPIs, setPendingWebAPIs] = React.useState<
@@ -853,40 +872,6 @@ function App() {
               {/* LEFT COL: Palette & Code (35%) */}
               <div className="flex w-[35%] min-w-[350px] flex-col border-r border-slate-800 bg-[#0d1117]">
                 {/* Palette Area (New) */}
-                <div className="border-b border-slate-800 bg-[#161b22] p-4">
-                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-2">
-                    Event Sources
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <DraggableToken
-                      id="palette-timeout"
-                      label="setTimeout(0)"
-                      color="#d946ef"
-                      className="cursor-grab hover:bg-slate-800"
-                      onAction={() =>
-                        handleScheduleTask("palette-timeout", "setTimeout(0)")
-                      }
-                    />
-                    <DraggableToken
-                      id="palette-fetch"
-                      label="fetch()"
-                      color="#d946ef"
-                      className="cursor-grab hover:bg-slate-800"
-                      onAction={() =>
-                        handleScheduleTask("palette-fetch", "fetch()")
-                      }
-                    />
-                    <DraggableToken
-                      id="palette-promise"
-                      label="Promise.resolve"
-                      color="#22d3ee"
-                      className="cursor-grab hover:bg-slate-800"
-                      onAction={() =>
-                        handleScheduleTask("palette-promise", "Promise.resolve")
-                      }
-                    />
-                  </div>
-                </div>
 
                 {/* Code Editor Area */}
                 <div id="box-code" className="relative flex-1 overflow-hidden">
@@ -978,15 +963,32 @@ function App() {
                     <EventLoopSpinner active={isRunning} />
                   </div>
 
-                  {/* 4. Task Queue (Middle Right) */}
-                  <div className="row-span-1">
-                    <DropZone id="box-taskqueue" className="h-full">
-                      <TaskQueue tasks={macroTasks} />
-                    </DropZone>
+                  {/* 4. Macrotask Queues (Right Column Split) */}
+                  <div className="row-span-3 col-start-2 row-start-1 grid grid-rows-4 gap-4 h-full">
+                    <VerticalQueue
+                      title="Timers"
+                      color="#fca5a5"
+                      tasks={queueState.timers}
+                    />
+                    <VerticalQueue
+                      title="I/O Callbacks"
+                      color="#d8b4fe"
+                      tasks={queueState.io}
+                    />
+                    <VerticalQueue
+                      title="Check (Immediate)"
+                      color="#fcd34d"
+                      tasks={queueState.check}
+                    />
+                    <VerticalQueue
+                      title="Close Handlers"
+                      color="#94a3b8"
+                      tasks={queueState.close}
+                    />
                   </div>
 
-                  {/* 5. Microtask Queue (Bottom) */}
-                  <div className="col-start-2 row-start-3">
+                  {/* 5. Microtask Queue (Bottom Left) -> Adjusted Layout */}
+                  <div className="col-start-1 row-start-3">
                     <DropZone id="box-microtask" className="h-full">
                       <MicrotaskQueue
                         tasks={[
