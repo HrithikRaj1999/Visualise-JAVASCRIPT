@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "concurrently \"npm run dev:web\" \"npm run dev:server\"",
     "dev:web": "npm run dev -w @jsv/web",
     "dev:server": "npm run dev -w @jsv/server",
     "build": "npm run build -ws",
@@ -24,6 +25,7 @@
     "deploy:stop": "npm run deploy:server:stop"
   },
   "devDependencies": {
+    "concurrently": "^9.2.1",
     "typescript": "^5.6.3"
   }
 }

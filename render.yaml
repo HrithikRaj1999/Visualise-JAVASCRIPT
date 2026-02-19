@@ -5,10 +5,9 @@ services:
     plan: free
     autoDeployTrigger: "off"
     rootDir: .
-    buildCommand: npm ci && npm run build -w @jsv/server
+    buildCommand: npm ci --include=dev && npm run build -w @jsv/server
     startCommand: npm run start -w @jsv/server
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-
