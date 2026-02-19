@@ -34,7 +34,7 @@ describe("tick simulation", () => {
     expect(dequeue).toMatchObject({ queue: "nextTick", id: "n1" });
   });
 
-  it("closes active phase after active callback ends", () => {
+  it("emits callback end and microtask checkpoint", () => {
     let state = createInitialState();
     state = replay(state, [
       { type: "PHASE_ENTER", ts: 1, phase: "timers" },
@@ -51,7 +51,12 @@ describe("tick simulation", () => {
 
     expect(tick(state)).toEqual([
       { type: "CALLBACK_END", ts: expect.any(Number), taskId: "t1" },
-      { type: "PHASE_EXIT", ts: expect.any(Number), phase: "timers" },
+      {
+        type: "MICROTASK_CHECKPOINT",
+        ts: expect.any(Number),
+        scope: "after_callback",
+        detail: "Completed setTimeout callback",
+      },
     ]);
   });
 
@@ -76,4 +81,3 @@ describe("tick simulation", () => {
     expect(tick(state)).toEqual([]);
   });
 });
-

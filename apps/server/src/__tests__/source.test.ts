@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createServer } from "../index";
+import { createServer } from "../ws/server";
 import WebSocket from "ws";
 import { VisualizerEvent } from "@jsv/protocol";
 
@@ -44,10 +44,6 @@ setTimeout(() => {
 
     ws.close();
     server.close();
-
-    const fs = require("fs");
-    fs.writeFileSync("events.json", JSON.stringify(events, null, 2));
-    console.log("Events written to events.json");
 
     // Check for source in ENQUEUE_TASK (setTimeout)
     // The setTimeout is on line 2 (in the template literal, line 1 is empty?)

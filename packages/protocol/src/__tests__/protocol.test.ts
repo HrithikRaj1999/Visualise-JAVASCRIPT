@@ -9,9 +9,11 @@ describe('protocol', () => {
     }
   });
 
-  it('keeps all six queues', () => {
+  it('keeps all task and microtask queues', () => {
     const state = reduceEvents(examples.timersVsMicrotasks.events);
     expect(state.queues.timers).toBeDefined();
+    expect(state.queues.pending).toBeDefined();
+    expect(state.queues.poll).toBeDefined();
     expect(state.queues.io).toBeDefined();
     expect(state.queues.check).toBeDefined();
     expect(state.queues.close).toBeDefined();

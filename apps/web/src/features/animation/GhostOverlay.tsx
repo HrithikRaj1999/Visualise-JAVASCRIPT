@@ -4,9 +4,14 @@ import { motion, AnimatePresence } from "framer-motion";
 import { VisualizerEvent } from "@jsv/protocol";
 import { useRectRegistry } from "./RectRegistry";
 
-const TASK_QUEUE_TO_BOX: Record<"timers" | "io" | "check" | "close", string> = {
+const TASK_QUEUE_TO_BOX: Record<
+  "timers" | "pending" | "poll" | "io" | "check" | "close",
+  string
+> = {
   timers: "box-timers",
-  io: "box-io",
+  pending: "box-pending",
+  poll: "box-poll",
+  io: "box-poll",
   check: "box-check",
   close: "box-close",
 };
@@ -63,7 +68,12 @@ export function GhostOverlay({
         break;
 
       case "ENQUEUE_TASK":
-        if (lastEvent.queue === "timers" || lastEvent.queue === "io") {
+        if (
+          lastEvent.queue === "timers" ||
+          lastEvent.queue === "poll" ||
+          lastEvent.queue === "io" ||
+          lastEvent.queue === "pending"
+        ) {
           sourceId = "box-webapi";
         } else {
           if (lastEvent.source) {

@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { examples } from '@jsv/protocol';
 
 describe('required examples', () => {
-  it('ships all five required examples', () => {
+  it('ships all required examples', () => {
     expect(Object.keys(examples).sort()).toEqual([
       'closeHandlers',
       'immediateVsTimeout',
       'ioVsImmediate',
       'nextTickPriority',
+      'pendingCallbacks',
       'timersVsMicrotasks',
     ]);
   });

@@ -21,8 +21,10 @@
     "deploy:server:status": "node scripts/render-service.mjs status",
     "deploy:server:start": "node scripts/render-service.mjs start",
     "deploy:server:stop": "node scripts/render-service.mjs stop",
-    "deploy:start": "npm run deploy:web && npm run deploy:server:start",
-    "deploy:stop": "npm run deploy:server:stop"
+    "deploy:stop": "npm run deploy:server:stop",
+    "lint": "npm run lint -ws",
+    "lint:all": "npm run lint -ws",
+    "test:all": "npm run test -ws"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

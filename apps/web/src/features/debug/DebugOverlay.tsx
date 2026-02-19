@@ -3,8 +3,10 @@ import React, { useEffect, useState } from "react";
 const BOX_IDS = [
   "box-stack",
   "box-webapi",
+  "box-timer-heap",
   "box-timers",
-  "box-io",
+  "box-pending",
+  "box-poll",
   "box-check",
   "box-close",
   "box-microtask",

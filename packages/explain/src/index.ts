@@ -4,11 +4,14 @@ export type Verbosity = 'beginner' | 'normal' | 'expert';
 export type Category =
   | 'phase'
   | 'timers'
-  | 'io'
+  | 'pending'
+  | 'poll'
   | 'check'
   | 'close'
   | 'nextTick'
   | 'promise'
+  | 'handles'
+  | 'requests'
   | 'console'
   | 'errors'
   | 'diagnostics'
@@ -33,11 +36,14 @@ export const defaultContext: ExplainContext = {
   enabledCategories: {
     phase: true,
     timers: true,
-    io: true,
+    pending: true,
+    poll: true,
     check: true,
     close: true,
     nextTick: true,
     promise: true,
+    handles: true,
+    requests: true,
     console: true,
     errors: true,
     diagnostics: true,
@@ -58,7 +64,10 @@ function requiredVerbosity(event: VisualizerEvent): Verbosity {
 }
 
 function queueCategory(queue: string): Category {
-  if (queue === 'timers' || queue === 'io' || queue === 'check' || queue === 'close') return queue;
+  if (queue === 'timers' || queue === 'pending' || queue === 'poll' || queue === 'check' || queue === 'close') {
+    return queue;
+  }
+  if (queue === 'io') return 'poll';
   if (queue === 'nextTick' || queue === 'promise') return queue;
   return 'phase';
 }
@@ -68,6 +77,8 @@ export function categoryForEvent(event: VisualizerEvent): Category {
   if (event.type === 'RUNTIME_ERROR') return 'errors';
   if (event.type === 'TS_DIAGNOSTIC') return 'diagnostics';
   if (event.type === 'ENTER_FUNCTION' || event.type === 'EXIT_FUNCTION') return 'stack';
+  if (event.type === 'HANDLE_OPEN' || event.type === 'HANDLE_CLOSE') return 'handles';
+  if (event.type === 'REQUEST_START' || event.type === 'REQUEST_END') return 'requests';
   if ('queue' in event) return queueCategory(event.queue);
   return 'phase';
 }
@@ -92,6 +103,24 @@ export function explainEvent(event: VisualizerEvent, context: ExplainContext = d
         id: `${event.ts}-${event.type}`,
         title: `${event.phase.toUpperCase()} phase done`,
         description: `Event loop exited ${event.phase} and will evaluate the next phase.`,
+        category,
+        level: 'info',
+        ts: event.ts,
+      };
+    case 'POLL_WAIT_START':
+      return {
+        id: `${event.ts}-${event.type}`,
+        title: 'Poll waiting',
+        description: event.reason ?? 'Poll phase is waiting for I/O readiness.',
+        category,
+        level: 'info',
+        ts: event.ts,
+      };
+    case 'POLL_WAIT_END':
+      return {
+        id: `${event.ts}-${event.type}`,
+        title: 'Poll resumed',
+        description: event.reason ?? 'Poll wait finished and loop continues.',
         category,
         level: 'info',
         ts: event.ts,
@@ -160,6 +189,42 @@ export function explainEvent(event: VisualizerEvent, context: ExplainContext = d
         description: event.args.map((arg) => String(arg)).join(' '),
         category,
         level: event.level === 'warn' ? 'warn' : event.level === 'error' ? 'error' : 'info',
+        ts: event.ts,
+      };
+    case 'HANDLE_OPEN':
+      return {
+        id: `${event.ts}-${event.id}`,
+        title: 'Handle opened',
+        description: `${event.label} (${event.kind}) is now active.`,
+        category,
+        level: 'info',
+        ts: event.ts,
+      };
+    case 'HANDLE_CLOSE':
+      return {
+        id: `${event.ts}-${event.id}`,
+        title: 'Handle closed',
+        description: `${event.id} is no longer keeping the loop alive.`,
+        category,
+        level: 'info',
+        ts: event.ts,
+      };
+    case 'REQUEST_START':
+      return {
+        id: `${event.ts}-${event.id}`,
+        title: 'Request started',
+        description: `${event.label} (${event.kind}) is in progress.`,
+        category,
+        level: 'info',
+        ts: event.ts,
+      };
+    case 'REQUEST_END':
+      return {
+        id: `${event.ts}-${event.id}`,
+        title: 'Request finished',
+        description: `${event.id} completed (${event.status ?? 'ok'}).`,
+        category,
+        level: event.status === 'error' ? 'warn' : 'info',
         ts: event.ts,
       };
     case 'RUNTIME_ERROR':

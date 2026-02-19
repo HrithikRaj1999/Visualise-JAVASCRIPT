@@ -5,7 +5,9 @@ import { useRectRegistry } from "./RectRegistry";
 
 const TASK_QUEUE_TO_BOX: Record<TaskQueue, string> = {
   timers: "box-timers",
-  io: "box-io",
+  pending: "box-pending",
+  poll: "box-poll",
+  io: "box-poll",
   check: "box-check",
   close: "box-close",
 };
@@ -45,13 +47,59 @@ function resolveFlow(event: VisualizerEvent): FlowSpec | null {
         color: 0xd946ef,
         label: "schedule",
       };
+    case "HANDLE_OPEN":
+      return {
+        fromId: event.source ? `code-line-${event.source.line}` : "box-code",
+        toId: "box-webapi",
+        color: 0xd946ef,
+        label: event.label,
+      };
+    case "REQUEST_START":
+      return {
+        fromId: event.source ? `code-line-${event.source.line}` : "box-code",
+        toId: "box-webapi",
+        color: 0xd946ef,
+        label: event.label,
+      };
+    case "TIMER_HEAP_SCHEDULE":
+      return {
+        fromId: event.source ? `code-line-${event.source.line}` : "box-webapi",
+        fallbackFromId: "box-code",
+        toId: "box-timer-heap",
+        color: 0xfb7185,
+        label: event.label,
+      };
+    case "TIMER_HEAP_READY":
+      return {
+        fromId: `token-timer-heap-${event.timerId}`,
+        fallbackFromId: "box-timer-heap",
+        toId: "box-timers",
+        color: 0xfbbf24,
+        label: event.label,
+      };
     case "ENQUEUE_TASK":
-      if (event.queue === "timers" || event.queue === "io") {
+      if (event.queue === "timers") {
+        return {
+          fromId: "box-timer-heap",
+          toId: "box-timers",
+          color: 0xfbbf24,
+          label: event.label,
+        };
+      }
+      if (event.queue === "poll" || event.queue === "io") {
         return {
           fromId: `token-webapi-${event.taskId}`,
           fallbackFromId: "box-webapi",
           toId: TASK_QUEUE_TO_BOX[event.queue],
-          color: 0xfbbf24,
+          color: 0xc084fc,
+          label: event.label,
+        };
+      }
+      if (event.queue === "pending") {
+        return {
+          fromId: "box-webapi",
+          toId: TASK_QUEUE_TO_BOX[event.queue],
+          color: 0xfb923c,
           label: event.label,
         };
       }
@@ -73,7 +121,16 @@ function resolveFlow(event: VisualizerEvent): FlowSpec | null {
         fromId: `token-${event.taskId}`,
         fallbackFromId: TASK_QUEUE_TO_BOX[event.queue],
         toId: "box-stack",
-        color: 0xfbbf24,
+        color:
+          event.queue === "check"
+            ? 0xfbbf24
+            : event.queue === "close"
+              ? 0x94a3b8
+              : event.queue === "pending"
+                ? 0xfb923c
+                : event.queue === "poll" || event.queue === "io"
+                  ? 0xc084fc
+                  : 0xfbbf24,
         label: event.taskId,
       };
     case "DEQUEUE_MICROTASK":

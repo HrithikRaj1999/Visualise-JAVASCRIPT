@@ -68,7 +68,10 @@ export function jumpTo(input: ReplayState, nextPointer: number): ReplayState {
   return replay;
 }
 
-export function phaseJumpIndex(events: VisualizerEvent[], phase: 'timers' | 'io' | 'check' | 'close'): number {
+export function phaseJumpIndex(
+  events: VisualizerEvent[],
+  phase: "timers" | "pending" | "poll" | "check" | "close",
+): number {
   const index = events.findIndex((event) => event.type === 'PHASE_ENTER' && event.phase === phase);
   return index === -1 ? 0 : index + 1;
 }

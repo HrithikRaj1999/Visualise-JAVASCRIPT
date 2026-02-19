@@ -5,6 +5,8 @@ import type {
   VisualizerEvent,
   ExecutionFocus,
   SourceRange,
+  HandleKind,
+  RequestKind,
 } from "./events";
 
 export type QueueItem = {
@@ -15,6 +17,34 @@ export type QueueItem = {
   meta?: unknown;
 };
 
+export type ActiveHandle = {
+  id: string;
+  kind: HandleKind;
+  label: string;
+  source?: SourceRange;
+  openedAt: number;
+};
+
+export type ActiveRequest = {
+  id: string;
+  kind: RequestKind;
+  label: string;
+  source?: SourceRange;
+  startedAt: number;
+};
+
+export type MicrotaskCheckpoint = {
+  scope: "after_callback" | "phase_transition" | "script_end";
+  detail?: string;
+  ts: number;
+};
+
+export type PollWaitState = {
+  active: boolean;
+  timeoutMs?: number;
+  reason?: string;
+};
+
 export type VisualizerState = {
   runtime: "node";
   phase: Phase | null;
@@ -22,15 +52,27 @@ export type VisualizerState = {
   callStack: Array<{ id: string; label: string; source?: SourceRange }>;
   queues: {
     timers: QueueItem[];
+    pending: QueueItem[];
+    poll: QueueItem[];
     io: QueueItem[];
     check: QueueItem[];
     close: QueueItem[];
     nextTick: QueueItem[];
     promise: QueueItem[];
   };
+  timerHeap: QueueItem[];
+  pollWait: PollWaitState;
+  activeHandles: ActiveHandle[];
+  activeRequests: ActiveRequest[];
+  microtaskCheckpoint: MicrotaskCheckpoint | null;
   activeTaskId: string | null;
   drainingMicrotasks: boolean;
-  logs: Array<{ level: "log" | "warn" | "error"; args: unknown[]; ts: number }>;
+  logs: Array<{
+    level: "log" | "warn" | "error";
+    args: unknown[];
+    ts: number;
+    source?: SourceRange;
+  }>;
   diagnostics: Array<{ message: string; line: number; col: number }>;
   errors: Array<{ message: string; stack?: string; ts: number }>;
   timeline: VisualizerEvent[];
@@ -45,12 +87,19 @@ export function createInitialState(): VisualizerState {
     callStack: [],
     queues: {
       timers: [],
+      pending: [],
+      poll: [],
       io: [],
       check: [],
       close: [],
       nextTick: [],
       promise: [],
     },
+    timerHeap: [],
+    pollWait: { active: false },
+    activeHandles: [],
+    activeRequests: [],
+    microtaskCheckpoint: null,
     activeTaskId: null,
     drainingMicrotasks: false,
     logs: [],
@@ -110,6 +159,31 @@ function queueItemFromMicrotask(
   };
 }
 
+function queueItemFromTimerHeap(
+  event:
+    | Extract<VisualizerEvent, { type: "TIMER_HEAP_SCHEDULE" }>
+    | Extract<VisualizerEvent, { type: "TIMER_HEAP_READY" }>,
+): QueueItem {
+  return {
+    id: event.type === "TIMER_HEAP_SCHEDULE" ? event.timerId : event.taskId,
+    label: event.label,
+    source: event.source,
+    meta: event.meta,
+    state: "queued",
+  };
+}
+
+function canonicalTaskQueue(queue: TaskQueue): "timers" | "pending" | "poll" | "check" | "close" {
+  if (queue === "io") {
+    return "poll";
+  }
+  return queue;
+}
+
+function syncPollIoAlias(queues: VisualizerState["queues"]) {
+  queues.io = [...queues.poll];
+}
+
 export function applyEvent(
   state: VisualizerState,
   event: VisualizerEvent,
@@ -119,12 +193,18 @@ export function applyEvent(
     callStack: [...state.callStack],
     queues: {
       timers: [...state.queues.timers],
+      pending: [...state.queues.pending],
+      poll: [...state.queues.poll],
       io: [...state.queues.io],
       check: [...state.queues.check],
       close: [...state.queues.close],
       nextTick: [...state.queues.nextTick],
       promise: [...state.queues.promise],
     },
+    timerHeap: [...state.timerHeap],
+    pollWait: { ...state.pollWait },
+    activeHandles: [...state.activeHandles],
+    activeRequests: [...state.activeRequests],
     logs: [...state.logs],
     diagnostics: [...state.diagnostics],
     errors: [...state.errors],
@@ -138,8 +218,30 @@ export function applyEvent(
     case "SCRIPT_END":
       next.isRunning = false;
       next.phase = null;
+      next.pollWait = { active: false };
+      next.microtaskCheckpoint = {
+        scope: "script_end",
+        detail: "Script finished",
+        ts: event.ts,
+      };
       next.activeTaskId = null;
       return next;
+    case "TIMER_HEAP_SCHEDULE":
+      next.timerHeap.push(queueItemFromTimerHeap(event));
+      if (event.source) {
+        next.focus = {
+          ...next.focus,
+          activeBox: "TIMER_HEAP",
+          activeRange: event.source,
+          reason: "Timer scheduled",
+        };
+      }
+      return next;
+    case "TIMER_HEAP_READY": {
+      removeQueueItem(next.timerHeap, event.timerId);
+      next.queues.timers.push(queueItemFromTimerHeap(event));
+      return next;
+    }
     case "PHASE_ENTER":
       next.phase = event.phase;
       return next;
@@ -148,8 +250,26 @@ export function applyEvent(
         next.phase = null;
       }
       return next;
+    case "POLL_WAIT_START":
+      next.pollWait = {
+        active: true,
+        timeoutMs: event.timeoutMs,
+        reason: event.reason,
+      };
+      return next;
+    case "POLL_WAIT_END":
+      next.pollWait = { active: false, reason: event.reason };
+      return next;
+    case "MICROTASK_CHECKPOINT":
+      next.microtaskCheckpoint = {
+        scope: event.scope,
+        detail: event.detail,
+        ts: event.ts,
+      };
+      return next;
     case "ENQUEUE_TASK":
-      next.queues[event.queue].push(queueItemFromTask(event));
+      next.queues[canonicalTaskQueue(event.queue)].push(queueItemFromTask(event));
+      syncPollIoAlias(next.queues);
       if (event.source) {
         next.focus = {
           ...next.focus,
@@ -159,7 +279,9 @@ export function applyEvent(
       }
       return next;
     case "DEQUEUE_TASK": {
-      const task = removeQueueItem(next.queues[event.queue], event.taskId);
+      const queue = canonicalTaskQueue(event.queue);
+      const task = removeQueueItem(next.queues[queue], event.taskId);
+      syncPollIoAlias(next.queues);
       next.activeTaskId = task?.id ?? event.taskId;
       return next;
     }
@@ -232,7 +354,44 @@ export function applyEvent(
       }
       return next;
     case "CONSOLE":
-      next.logs.push({ level: event.level, args: event.args, ts: event.ts });
+      next.logs.push({
+        level: event.level,
+        args: event.args,
+        ts: event.ts,
+        source: event.source,
+      });
+      return next;
+    case "HANDLE_OPEN":
+      if (!next.activeHandles.some((handle) => handle.id === event.id)) {
+        next.activeHandles.push({
+          id: event.id,
+          kind: event.kind,
+          label: event.label,
+          source: event.source,
+          openedAt: event.ts,
+        });
+      }
+      return next;
+    case "HANDLE_CLOSE":
+      next.activeHandles = next.activeHandles.filter(
+        (handle) => handle.id !== event.id,
+      );
+      return next;
+    case "REQUEST_START":
+      if (!next.activeRequests.some((request) => request.id === event.id)) {
+        next.activeRequests.push({
+          id: event.id,
+          kind: event.kind,
+          label: event.label,
+          source: event.source,
+          startedAt: event.ts,
+        });
+      }
+      return next;
+    case "REQUEST_END":
+      next.activeRequests = next.activeRequests.filter(
+        (request) => request.id !== event.id,
+      );
       return next;
     case "RUNTIME_ERROR":
       next.errors.push({
@@ -269,7 +428,7 @@ export function reduceEvents(
 }
 
 export function queuesForPhase(phase: Phase): TaskQueue {
-  return phase;
+  return phase === "poll" ? "poll" : phase;
 }
 
 export function microtaskOrder(): MicrotaskQueue[] {

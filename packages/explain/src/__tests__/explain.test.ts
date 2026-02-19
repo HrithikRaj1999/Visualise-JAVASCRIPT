@@ -4,7 +4,10 @@ import { explainEvents, explainEvent } from '../index';
 
 describe('explain package', () => {
   it('creates toasts for phase transitions', () => {
-    const toast = explainEvent(examples.timersVsMicrotasks.events[6]);
+    const phaseEvent = examples.timersVsMicrotasks.events.find(
+      (event) => event.type === 'PHASE_ENTER' && event.phase === 'timers',
+    );
+    const toast = phaseEvent ? explainEvent(phaseEvent) : null;
     expect(toast?.title).toContain('TIMERS');
   });
 
@@ -24,11 +27,14 @@ describe('explain package', () => {
       enabledCategories: {
         phase: true,
         timers: true,
-        io: true,
+        pending: true,
+        poll: true,
         check: true,
         close: true,
         nextTick: true,
         promise: false,
+        handles: true,
+        requests: true,
         console: true,
         errors: true,
         diagnostics: true,

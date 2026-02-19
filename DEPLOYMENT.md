@@ -21,6 +21,7 @@ Copy-Item .env.example .env
 3. Fill `.env` with:
 - `CLOUDFLARE_PAGES_PROJECT`
 - `CLOUDFLARE_PAGES_BRANCH` (usually `main`)
+- `VITE_SERVER_WS_URL` (local: `ws://localhost:8080`, prod: `wss://api.yourdomain.com`)
 - `RENDER_API_KEY`
 - `RENDER_SERVICE_ID`
 4. Note: deploy scripts auto-read `.env`.
@@ -94,6 +95,8 @@ Important:
 - Create `api.yourdomain.com` CNAME to your Render hostname.
 3. WebSocket endpoint:
 - Use `wss://api.yourdomain.com` from frontend.
+4. Frontend runtime env:
+- Set `VITE_SERVER_WS_URL=wss://api.yourdomain.com` before deploying web.
 
 ## 5) Verify Deployment
 1. Open frontend URL and verify app loads.
