@@ -190,8 +190,21 @@ export function FlowGpuOverlay({
   const { getRect } = useRectRegistry();
 
   const resolveRect = React.useCallback(
-    (id: string) =>
-      getRect(id) ?? document.getElementById(id)?.getBoundingClientRect() ?? null,
+    (id: string) => {
+      const domRect = document.getElementById(id)?.getBoundingClientRect() ?? null;
+      if (domRect && domRect.width > 0 && domRect.height > 0) {
+        return domRect;
+      }
+      // Use cached rects only for moving tokens that may unmount before animation spawns.
+      if (!id.startsWith("token-")) {
+        return null;
+      }
+      const cachedRect = getRect(id);
+      if (!cachedRect || cachedRect.width <= 0 || cachedRect.height <= 0) {
+        return null;
+      }
+      return cachedRect;
+    },
     [getRect],
   );
 
@@ -302,9 +315,10 @@ export function FlowGpuOverlay({
         const positions = particle.trail.geometry.getAttribute(
           "position",
         ) as THREE.BufferAttribute;
-        const latest = particle.trailPoints[0] ?? point;
+        const oldest =
+          particle.trailPoints[particle.trailPoints.length - 1] ?? point;
         for (let p = 0; p < 28; p++) {
-          const src = particle.trailPoints[p] ?? latest;
+          const src = particle.trailPoints[p] ?? oldest;
           positions.setXYZ(p, src.x, src.y, src.z);
         }
         positions.needsUpdate = true;

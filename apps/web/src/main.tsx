@@ -967,18 +967,24 @@ function CodeHighlighter({
   const lines = code.split("\n");
   const { register } = useRectRegistry();
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const lastScrolledLineRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
-    if (activeRange && scrollRef.current) {
-      // Find the active line element
-      const lineEl = scrollRef.current.children[
-        activeRange.line - 1
-      ] as HTMLElement;
-      if (lineEl) {
-        lineEl.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+    if (!activeRange?.line || !scrollRef.current) {
+      lastScrolledLineRef.current = null;
+      return;
     }
-  }, [activeRange]);
+    if (lastScrolledLineRef.current === activeRange.line) {
+      return;
+    }
+    const lineEl = scrollRef.current.children[activeRange.line - 1] as
+      | HTMLElement
+      | undefined;
+    if (lineEl) {
+      lineEl.scrollIntoView({ behavior: "auto", block: "center" });
+      lastScrolledLineRef.current = activeRange.line;
+    }
+  }, [activeRange?.line]);
 
   return (
     <div
@@ -998,6 +1004,7 @@ function CodeHighlighter({
         return (
           <div
             key={i}
+            id={`code-line-${lineNumber}`}
             ref={(el) => register(`code-line-${lineNumber}`, el)}
             className={`w-full transition-all duration-500 rounded-sm
                 ${
@@ -1107,7 +1114,10 @@ function App() {
   }, [autoPlay, speed]);
 
   const { state } = replay;
-  const isRunning = autoPlay || state.callStack.length > 0;
+  const isRunning =
+    state.callStack.length > 0 ||
+    state.drainingMicrotasks ||
+    state.phase !== null;
   const shouldRenderGpuFlow = autoPlay || replay.pointer > 0;
 
   // --- Derived State & Events ---
@@ -1146,32 +1156,35 @@ function App() {
     [state.queues],
   );
   const activeCodeRange = React.useMemo(() => {
+    const directSource =
+      lastEvent && "source" in lastEvent ? lastEvent.source : undefined;
     if (topFrame?.source) {
       return topFrame.source;
     }
+    if (directSource) {
+      return directSource;
+    }
     if (
       lastEvent &&
-      "source" in lastEvent &&
-      lastEvent.source &&
-      (lastEvent.type === "ENQUEUE_TASK" ||
-        lastEvent.type === "ENQUEUE_MICROTASK" ||
-        lastEvent.type === "CALLBACK_START" ||
-        lastEvent.type === "ENTER_FUNCTION" ||
-        lastEvent.type === "WEBAPI_SCHEDULE")
+      (lastEvent.type === "CONSOLE" ||
+        lastEvent.type === "RUNTIME_ERROR" ||
+        lastEvent.type === "DEQUEUE_TASK" ||
+        lastEvent.type === "DEQUEUE_MICROTASK" ||
+        lastEvent.type === "CALLBACK_END")
     ) {
-      return lastEvent.source;
+      for (
+        let i = replay.pointer - 2;
+        i >= 0 && i >= replay.pointer - 6;
+        i -= 1
+      ) {
+        const previousEvent = replay.events[i];
+        if ("source" in previousEvent && previousEvent.source) {
+          return previousEvent.source;
+        }
+      }
     }
-    if (!state.isRunning && state.callStack.length === 0) {
-      return undefined;
-    }
-    return state.focus?.activeRange;
-  }, [
-    lastEvent,
-    state.callStack.length,
-    state.focus?.activeRange,
-    state.isRunning,
-    topFrame?.source,
-  ]);
+    return undefined;
+  }, [lastEvent, replay.events, replay.pointer, topFrame?.source]);
 
   const executionSnapshots = React.useMemo(() => {
     const snapshots: Array<{
@@ -1417,7 +1430,7 @@ function App() {
           <div className="flex items-center justify-between border-b border-slate-800 bg-[#010409]/80 backdrop-blur-md px-4 py-3 shadow-md z-50">
             <div className="flex items-center gap-3">
               <span className="ml-2 font-mono text-xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
-                Feel Real JS
+                SeeJS
               </span>
             </div>
             <div className="flex items-center gap-4">
@@ -1456,13 +1469,6 @@ function App() {
                 disabled={autoPlay}
               >
                 NEXT STEP
-              </Button>
-              <Button
-                className="border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 h-7 text-xs px-3 border disabled:opacity-45"
-                onClick={() => advanceReplay(5)}
-                disabled={autoPlay}
-              >
-                NEXT 5 STEPS
               </Button>
               <Button
                 className="bg-green-600 hover:bg-green-700 text-white h-7 text-xs px-3"
