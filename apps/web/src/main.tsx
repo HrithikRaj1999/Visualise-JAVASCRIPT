@@ -1,5 +1,6 @@
 import React from "react";
-import ReactDOM from "react-dom/client";
+import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "framer-motion";
 import { examples } from "@jsv/protocol";
@@ -303,18 +304,189 @@ function advanceReplayByOne(input: ReplayState): ReplayState {
   return next;
 }
 
+// --- Icons ---
+function IconSettings({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      strokeWidth={1.5}
+      stroke="currentColor"
+      className={className}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"
+      />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+      />
+    </svg>
+  );
+}
+
+// --- Font Size Context ---
+type FontSizeState = Record<string, number>; // boxId -> scale (0.8, 1, 1.2, 1.5)
+const FontSizeContext = React.createContext<{
+  sizes: FontSizeState;
+  setSize: (boxId: string, size: number) => void;
+}>({ sizes: {}, setSize: () => {} });
+
+function FontSizeProvider({ children }: { children: React.ReactNode }) {
+  const [sizes, setSizes] = React.useState<FontSizeState>({});
+  const setSize = (boxId: string, size: number) => {
+    setSizes((prev) => ({ ...prev, [boxId]: size }));
+  };
+  return (
+    <FontSizeContext.Provider value={{ sizes, setSize }}>
+      {children}
+    </FontSizeContext.Provider>
+  );
+}
+
+function useFontSize(boxId: string) {
+  const { sizes, setSize } = React.useContext(FontSizeContext);
+  return {
+    scale: sizes[boxId] || 1,
+    setSize: (size: number) => setSize(boxId, size),
+  };
+}
+
+function TextSizeControl({ boxId }: { boxId: string }) {
+  const { scale, setSize } = useFontSize(boxId);
+  const [isOpen, setIsOpen] = React.useState(false);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const [dropdownPos, setDropdownPos] = React.useState({ top: 0, left: 0 });
+
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        triggerRef.current &&
+        !triggerRef.current.contains(event.target as Node)
+      ) {
+        // Also check if clicking inside the dropdown (which is now in a portal-like state effectively)
+        const dropdown = document.getElementById(`dropdown-${boxId}`);
+        if (dropdown && !dropdown.contains(event.target as Node)) {
+          setIsOpen(false);
+        }
+      }
+    };
+
+    // Update position on scroll/resize if open
+    const updatePos = () => {
+      if (isOpen && triggerRef.current) {
+        const rect = triggerRef.current.getBoundingClientRect();
+        setDropdownPos({
+          top: rect.bottom + 5,
+          left: rect.right - 80, // Align right edge roughly
+        });
+      }
+    };
+
+    if (isOpen) {
+      updatePos();
+      document.addEventListener("mousedown", handleClickOutside);
+      window.addEventListener("scroll", updatePos, true);
+      window.addEventListener("resize", updatePos);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      window.removeEventListener("scroll", updatePos, true);
+      window.removeEventListener("resize", updatePos);
+    };
+  }, [isOpen, boxId]);
+
+  const handleToggle = () => {
+    if (!isOpen && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setDropdownPos({
+        top: rect.bottom + 5,
+        left: rect.right - 80,
+      });
+    }
+    setIsOpen(!isOpen);
+  };
+
+  const steps = [
+    { label: "XS", value: 0.8 },
+    { label: "S", value: 1.0 },
+    { label: "M", value: 1.2 },
+    { label: "L", value: 1.5 },
+    { label: "XL", value: 2.0 },
+  ];
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        onClick={handleToggle}
+        className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300 transition-colors relative z-50"
+        title="Adjust Text Size"
+      >
+        <IconSettings className="h-4 w-4" />
+      </button>
+
+      {isOpen &&
+        createPortal(
+          <div
+            id={`dropdown-${boxId}`}
+            className="fixed z-[9999] flex flex-col gap-0.5 rounded-md border border-slate-700 bg-[#0d1117] p-1 shadow-xl min-w-[70px]"
+            style={{
+              top: dropdownPos.top,
+              left: dropdownPos.left,
+            }}
+          >
+            {steps.map((step) => (
+              <button
+                key={step.label}
+                onClick={() => {
+                  setSize(step.value);
+                  setIsOpen(false);
+                }}
+                className={`w-full text-left rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+                  Math.abs(scale - step.value) < 0.01
+                    ? "bg-blue-600/20 text-blue-400"
+                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                }`}
+              >
+                {step.label} {(step.value * 100).toFixed(0)}%
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 // --- Helper Components ---
 const generateId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-function BoxHeader({ title, color }: { title: string; color: string }) {
+function BoxHeader({
+  title,
+  color,
+  boxId,
+}: {
+  title: string;
+  color: string;
+  boxId?: string;
+}) {
+  const { scale } = boxId ? useFontSize(boxId) : { scale: 1 };
+
   return (
     <div
-      className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-md border px-3 py-1 text-xs font-bold uppercase tracking-wider text-white shadow-sm"
+      className="absolute top-0 mt-1 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border px-5 py-1 font-bold uppercase tracking-widest bg-[#0d1117] shadow-lg transition-all whitespace-nowrap z-50"
       style={{
-        backgroundColor: "#1e293b",
-        borderColor: color,
-        boxShadow: `0 0 10px ${color}40`,
+        borderColor: `${color}40`,
+        color: color,
+        boxShadow: `0 0 15px ${color}20`,
+        fontSize: `${0.75 * scale}rem`, // Base xs (0.75rem) * scale
+        padding: `${0.25 * scale}rem ${1.25 * scale}rem`,
       }}
     >
       {title}
@@ -337,17 +509,36 @@ function NeonBox({
   children: React.ReactNode;
   className?: string;
 }) {
+  // Use "unknown-box" if no ID provided, though all boxes should have IDs now.
+  const safeId = id || "unknown-box";
+  const { scale } = useFontSize(safeId);
+
   return (
     <div
       id={id}
-      className={`relative rounded-xl border-2 bg-slate-900/50 p-4 ${className}`}
+      className={`relative rounded-xl border bg-slate-900/40 backdrop-blur-sm p-5 transition-all duration-300 group/box ${className}`}
       style={{
-        borderColor: color,
-        boxShadow: `0 0 15px ${color}20, inset 0 0 20px ${color}10`,
+        borderColor: `${color}30`,
+        boxShadow: `0 0 30px -10px ${color}15, inset 0 0 20px ${color}05`,
       }}
     >
-      <BoxHeader title={title} color={color} />
-      {children}
+      <BoxHeader title={title} color={color} boxId={safeId} />
+
+      {/* Settings Control - Visible on hover or when open (managed by component itself mostly, but opacity helps clean UI) */}
+      <div className="opacity-0 group-hover/box:opacity-100 transition-opacity duration-200">
+        <TextSizeControl boxId={safeId} />
+      </div>
+
+      {/* Content Wrapper with Scaling */}
+      <div
+        className="w-full h-full min-h-0 transition-all duration-200 origin-top-left"
+        style={{
+          fontSize: `${scale}rem`,
+          lineHeight: scale > 1.2 ? 1.4 : 1.5,
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
@@ -382,30 +573,33 @@ function TaskToken({
   return (
     <motion.div
       layoutId={id}
-      initial={{ scale: 0.8, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 0.8, opacity: 0 }}
-      className="mb-2 flex items-center justify-between rounded-md border border-l-4 px-3 py-2 text-xs font-medium shadow-sm transition-shadow"
+      initial={{ scale: 0.9, opacity: 0, y: 10 }}
+      animate={{ scale: 1, opacity: 1, y: 0 }}
+      exit={{ scale: 0.9, opacity: 0, transition: { duration: 0.2 } }}
+      className="group relative mb-2 flex items-center justify-between overflow-hidden rounded-lg border bg-gradient-to-r from-slate-900 to-slate-800/80 px-3 py-2 text-sm font-medium shadow-md transition-all hover:border-opacity-100 hover:shadow-lg hover:brightness-110 max-w-full"
       style={{
-        backgroundColor: "#1e293b",
-        borderColor: "#334155",
+        borderColor: `${color}40`,
+        borderLeftWidth: "4px",
         borderLeftColor: color,
-        color: "#e2e8f0",
+        boxShadow: `0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.1)`,
       }}
       data-source-line={source?.line}
       ref={(el) => register(`token-${id}`, el)}
     >
-      <span className="truncate">{label}</span>
+      {/* Glossy highlight effect */}
+      <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 transition-opacity group-hover:opacity-100 pointer-events-none" />
+
+      <span
+        className="truncate font-mono text-slate-200 z-10 relative mr-2 flex-1"
+        title={label}
+      >
+        {label}
+      </span>
       {badge && (
-        <span className="ml-2 rounded bg-slate-700/70 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-slate-200">
+        <span className="shrink-0 rounded bg-slate-800/80 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400 border border-slate-700 z-10 relative">
           {badge}
         </span>
       )}
-      {/* Remove from registry on unmount? 
-          Actually, we WANT it to persist for the 'from' animation. 
-          The registry might need a cleanup strategy, but for now let's keep it. 
-          If we unregister on unmount, getRect might fail if called AFTER unmount.
-      */}
     </motion.div>
   );
 }
@@ -483,9 +677,17 @@ function WebAPIs({
       id="box-webapi"
       title="Web APIs"
       color="#d946ef"
-      className="h-full min-h-0"
+      className="h-full min-h-0 bg-[#0f172a]/40"
     >
-      <div className="grid grid-cols-2 gap-2 p-2 overflow-auto max-h-full">
+      <div
+        className="absolute inset-0 opacity-10 pointer-events-none"
+        style={{
+          backgroundImage:
+            "radial-gradient(circle at center, #d946ef 1px, transparent 1px)",
+          backgroundSize: "20px 20px",
+        }}
+      ></div>
+      <div className="grid grid-cols-2 gap-2 p-2 overflow-auto max-h-full relative z-10">
         <AnimatePresence>
           {pendingItems.map((item) => (
             <motion.div
@@ -498,7 +700,7 @@ function WebAPIs({
               className="flex flex-col items-center justify-center rounded border border-slate-700 bg-slate-800 p-2 text-center relative overflow-hidden"
             >
               <div
-                className={`text-[10px] uppercase font-bold z-10 ${
+                className={`text-xs uppercase font-bold z-10 ${
                   item.type === "timer"
                     ? "text-rose-300"
                     : item.type === "io"
@@ -508,7 +710,7 @@ function WebAPIs({
               >
                 {item.type}
               </div>
-              <div className="text-xs text-white truncate w-full z-10">
+              <div className="text-sm text-white truncate w-full z-10">
                 {item.label}
               </div>
               {/* Progress Bar */}
@@ -576,12 +778,12 @@ function HorizontalQueue({
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, scale: 0.8 }}
-              className="shrink-0 rounded border px-2 py-1 text-center text-[10px] font-medium shadow-sm"
+              className="shrink-0 rounded border px-3 py-1.5 text-center text-xs font-medium shadow-sm"
               style={{
                 borderColor: `${color}50`,
                 backgroundColor: `${color}15`,
                 color: `${color}ee`,
-                minWidth: "60px",
+                minWidth: "70px",
               }}
               id={`token-${task.id}`}
               data-source-line={task.source?.line}
@@ -589,7 +791,7 @@ function HorizontalQueue({
             >
               <div className="truncate">{task.label}</div>
               {index === 0 && (
-                <div className="mt-0.5 text-[9px] uppercase tracking-wide text-slate-300">
+                <div className="mt-0.5 text-[10px] uppercase tracking-wide text-slate-300">
                   Next
                 </div>
               )}
@@ -633,7 +835,7 @@ function MicrotaskQueue({
     >
       <div className="flex h-full flex-col gap-2 overflow-auto p-2">
         <div>
-          <div className="mb-1 text-[10px] uppercase tracking-wider text-cyan-400">
+          <div className="mb-1 text-xs uppercase tracking-wider text-cyan-400">
             nextTick
           </div>
           <div className="flex items-center gap-2 overflow-x-auto">
@@ -645,14 +847,14 @@ function MicrotaskQueue({
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, y: -20 }}
-                  className="min-w-[120px] rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-center text-xs text-cyan-200"
+                  className="min-w-[130px] rounded border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-center text-sm text-cyan-200"
                   id={`token-${task.id}`}
                   data-source-line={task.source?.line}
                   ref={(el) => register(`token-${task.id}`, el)}
                 >
                   <div className="truncate">{task.label}</div>
                   {index === 0 && (
-                    <div className="mt-0.5 text-[9px] uppercase tracking-wide text-cyan-300">
+                    <div className="mt-0.5 text-[10px] uppercase tracking-wide text-cyan-300">
                       Next
                     </div>
                   )}
@@ -662,7 +864,7 @@ function MicrotaskQueue({
           </div>
         </div>
         <div>
-          <div className="mb-1 text-[10px] uppercase tracking-wider text-cyan-400">
+          <div className="mb-1 text-xs uppercase tracking-wider text-cyan-400">
             promise
           </div>
           <div className="flex items-center gap-2 overflow-x-auto">
@@ -674,14 +876,14 @@ function MicrotaskQueue({
                   initial={{ opacity: 0, x: 20 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, y: -20 }}
-                  className="min-w-[120px] rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-center text-xs text-cyan-200"
+                  className="min-w-[130px] rounded border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-center text-sm text-cyan-200"
                   id={`token-${task.id}`}
                   data-source-line={task.source?.line}
                   ref={(el) => register(`token-${task.id}`, el)}
                 >
                   <div className="truncate">{task.label}</div>
                   {index === 0 && (
-                    <div className="mt-0.5 text-[9px] uppercase tracking-wide text-cyan-300">
+                    <div className="mt-0.5 text-[10px] uppercase tracking-wide text-cyan-300">
                       Next
                     </div>
                   )}
@@ -724,21 +926,30 @@ function EventLoopSpinner({ active }: { active: boolean }) {
       color="#fbbf24"
       className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-4"
     >
-      <div ref={spinnerRef} className="relative h-16 w-16">
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#fbbf24"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="h-full w-full"
-        >
-          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-        </svg>
+      <div className="relative flex items-center justify-center">
+        {/* Glow Effect */}
+        <div
+          className={`absolute inset-0 rounded-full bg-amber-400/30 blur-xl transition-all duration-700 ${active ? "opacity-100 scale-150" : "opacity-0 scale-50"}`}
+        />
+
+        <div ref={spinnerRef} className="relative h-16 w-16 z-10">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#fbbf24"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-full w-full drop-shadow-[0_0_8px_rgba(251,191,36,0.6)]"
+          >
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+        </div>
       </div>
-      <div className="text-center text-xs text-amber-200">
-        {active ? "Running" : "Idle"}
+      <div
+        className={`text-center text-sm font-mono font-bold tracking-widest transition-colors ${active ? "text-amber-300 drop-shadow-[0_0_5px_rgba(251,191,36,0.8)]" : "text-amber-200/50"}`}
+      >
+        {active ? "RUNNING" : "IDLE"}
       </div>
     </NeonBox>
   );
@@ -772,7 +983,7 @@ function CodeHighlighter({
   return (
     <div
       ref={scrollRef}
-      className="absolute inset-0 pointer-events-none font-mono text-xs md:text-sm p-4 leading-relaxed overflow-hidden"
+      className="absolute inset-0 pointer-events-none font-mono text-sm md:text-base p-6 leading-relaxed overflow-hidden"
     >
       {lines.map((line, i) => {
         const lineNumber = i + 1;
@@ -1279,17 +1490,31 @@ function App() {
               {/* Code Editor (Top 60%) */}
               <div
                 id="box-code"
-                className={`relative flex-1 min-h-0 overflow-hidden transition-all duration-300 ${focusClassForBox("box-code")}`}
+                className={`relative flex-1 min-h-0 overflow-hidden transition-all duration-300 group/code ${focusClassForBox("box-code")}`}
                 style={{ flex: "0 0 60%" }}
               >
+                {/* Settings Control - Visible on hover */}
+                <div className="absolute top-2 right-4 z-50 opacity-0 group-hover/code:opacity-100 transition-opacity duration-200">
+                  <TextSizeControl boxId="box-code" />
+                </div>
+
                 <div className="absolute inset-0 overflow-auto custom-scrollbar">
-                  <div className="min-h-full relative">
+                  <div
+                    className="min-h-full relative transition-all duration-200 origin-top-left"
+                    style={{
+                      fontSize: `${useFontSize("box-code").scale}rem`,
+                    }}
+                  >
                     <CodeHighlighter
                       code={code}
                       activeRange={activeCodeRange}
                     />
                     <textarea
-                      className="w-full h-full min-h-[400px] bg-transparent p-4 font-mono text-xs md:text-sm text-emerald-300 outline-none resize-none leading-relaxed relative z-10"
+                      className="w-full h-full min-h-[400px] bg-transparent p-6 font-mono outline-none resize-none leading-relaxed relative z-10"
+                      style={{
+                        fontSize: "inherit", // Inherit from parent wrapper
+                        lineHeight: "1.625", // Match CodeHighlighter relaxed
+                      }}
                       value={code}
                       onChange={(e) => setCode(e.target.value)}
                       spellCheck={false}
@@ -1301,16 +1526,28 @@ function App() {
               {/* Code Output (Bottom 40%) */}
               <div
                 id="box-code-output"
-                className={`relative flex flex-col min-h-0 border-t border-slate-800 transition-all duration-300 ${focusClassForBox("box-code-output")}`}
+                className={`relative flex flex-col min-h-0 border-t border-slate-800 transition-all duration-300 group/output ${focusClassForBox("box-code-output")}`}
                 style={{ flex: "1 1 0%" }}
               >
                 <FlowAnchor id="anchor-code-output-center" />
-                <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1.5 text-xs font-semibold text-slate-500 uppercase tracking-widest shrink-0">
-                  Code Output
+                <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1.5 text-xs font-semibold text-slate-500 uppercase tracking-widest shrink-0 flex justify-between items-center">
+                  <span
+                    style={{
+                      fontSize: `${useFontSize("box-code-output").scale * 0.75}rem`,
+                    }}
+                  >
+                    Code Output
+                  </span>
+                  <div className="opacity-0 group-hover/output:opacity-100 transition-opacity duration-200">
+                    <TextSizeControl boxId="box-code-output" />
+                  </div>
                 </div>
                 <div
                   id="box-code-output-body"
-                  className="flex-1 overflow-auto p-3 font-mono text-xs space-y-1.5 min-h-0"
+                  className="flex-1 overflow-auto p-3 font-mono space-y-1.5 min-h-0 transition-all duration-200 origin-top-left"
+                  style={{
+                    fontSize: `${useFontSize("box-code-output").scale * 0.85}rem`, // Default slightly smaller
+                  }}
                 >
                   {state.logs.length === 0 && state.errors.length === 0 && (
                     <span className="text-slate-600 italic">No output</span>
@@ -1360,9 +1597,9 @@ function App() {
             </div>
 
             {/* COL 2: Visualizer (45%) */}
-            <div className="flex w-[45%] flex-col border-r border-slate-800 bg-[#0d1117] p-4 min-h-0 overflow-y-auto h-full">
+            <div className="flex w-[45%] flex-col border-r border-slate-800 bg-[#0d1117] p-3 min-h-0 overflow-y-auto h-full">
               {/* Visualizer Content: Full Height Container */}
-              <div className="flex gap-2 flex-1 min-h-0 pt-1">
+              <div className="flex gap-4 flex-1 min-h-0 pb-2 w-full px-2">
                 {/* Left: Call Stack - tall, full height, scrollable */}
                 <div
                   className={`w-[280px] shrink-0 h-full flex flex-col transition-all duration-300 ${focusClassForBox("box-stack")}`}
@@ -1378,9 +1615,9 @@ function App() {
                 </div>
 
                 {/* Right: Grid of all other boxes - fills remaining space */}
-                <div className="flex-1 flex flex-col gap-2 h-full min-h-0 overflow-y-auto pr-1">
+                <div className="flex-1 flex flex-col gap-10 h-full min-h-0 overflow-y-auto pr-1 pb-10">
                   {/* Band 1: Web APIs & Event Loop */}
-                  <div className="flex gap-2 min-h-[150px] flex-1 shrink-0">
+                  <div className="flex gap-6 min-h-[180px] flex-1 shrink-0">
                     <div
                       className={`flex-1 transition-all duration-300 ${focusClassForBox("box-webapi")}`}
                     >
@@ -1398,7 +1635,7 @@ function App() {
 
                   {/* Band 2: Microtask Queue */}
                   <div
-                    className={`min-h-[130px] flex-1 shrink-0 transition-all duration-300 ${focusClassForBox("box-microtask")}`}
+                    className={`min-h-[160px] flex-1 shrink-0 transition-all duration-300 ${focusClassForBox("box-microtask")}`}
                   >
                     <DropZone id="box-microtask" className="h-full">
                       <MicrotaskQueue
@@ -1414,7 +1651,7 @@ function App() {
                   </div>
 
                   {/* Band 3: Macrotask Queues (2x2 Grid) */}
-                  <div className="grid grid-cols-2 gap-2 min-h-[180px] flex-1 shrink-0">
+                  <div className="grid grid-cols-2 gap-6 min-h-[180px] flex-1 shrink-0">
                     <HorizontalQueue
                       boxId="box-timers"
                       title="Timers"
@@ -1456,14 +1693,28 @@ function App() {
             <div className="flex w-[30%] min-w-[260px] flex-col bg-[#010409] min-h-0 h-full">
               {/* Current State (Top 30%) */}
               <div
-                className="flex flex-col border-b border-slate-800"
+                className="flex flex-col border-b border-slate-800 group/state"
                 style={{ flex: "0 0 30%" }}
               >
-                <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1.5 text-xs font-semibold text-slate-500 uppercase tracking-widest shrink-0">
-                  Current State
+                <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1.5 text-xs font-semibold text-slate-500 uppercase tracking-widest shrink-0 flex justify-between items-center">
+                  <span
+                    style={{
+                      fontSize: `${useFontSize("box-state").scale * 0.75}rem`,
+                    }}
+                  >
+                    Current State
+                  </span>
+                  <div className="opacity-0 group-hover/state:opacity-100 transition-opacity duration-200">
+                    <TextSizeControl boxId="box-state" />
+                  </div>
                 </div>
                 {/* ... existing Current State content ... */}
-                <div className="flex-1 overflow-auto p-3 font-mono text-[11px] text-slate-300 space-y-1 min-h-0">
+                <div
+                  className="flex-1 overflow-auto p-3 font-mono text-slate-300 space-y-1 min-h-0 transition-all duration-200 origin-top-left"
+                  style={{
+                    fontSize: `${useFontSize("box-state").scale * 0.75}rem`,
+                  }}
+                >
                   <div>
                     Last Event:{" "}
                     <span className="text-cyan-300 break-all">
@@ -1514,11 +1765,28 @@ function App() {
               </div>
 
               {/* Execution Logs (Bottom 70%) */}
-              <div className="flex flex-col min-h-0" style={{ flex: "1 1 0%" }}>
-                <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1.5 text-xs font-semibold text-slate-500 uppercase tracking-widest shrink-0">
-                  Execution Logs
+              <div
+                className="flex flex-col min-h-0 group/logs"
+                style={{ flex: "1 1 0%" }}
+              >
+                <div className="border-b border-slate-800 bg-[#0d1117] px-4 py-1.5 text-xs font-semibold text-slate-500 uppercase tracking-widest shrink-0 flex justify-between items-center">
+                  <span
+                    style={{
+                      fontSize: `${useFontSize("box-logs").scale * 0.75}rem`,
+                    }}
+                  >
+                    Execution Logs
+                  </span>
+                  <div className="opacity-0 group-hover/logs:opacity-100 transition-opacity duration-200">
+                    <TextSizeControl boxId="box-logs" />
+                  </div>
                 </div>
-                <div className="flex-1 overflow-auto p-3 font-mono text-[11px] space-y-1.5 min-h-0 relative">
+                <div
+                  className="flex-1 overflow-auto p-3 font-mono space-y-1.5 min-h-0 relative transition-all duration-200 origin-top-left"
+                  style={{
+                    fontSize: `${useFontSize("box-logs").scale * 0.75}rem`,
+                  }}
+                >
                   {executionSnapshots.length === 0 && (
                     <span className="text-slate-600 italic">
                       No execution yet
@@ -1614,8 +1882,10 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <FontSizeProvider>
+      <App />
+    </FontSizeProvider>
   </React.StrictMode>,
 );

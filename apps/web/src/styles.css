@@ -8,11 +8,45 @@
 
 body {
   margin: 0;
-  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
-  background: radial-gradient(circle at 20% 10%, #f4e9d5 0%, #f7f5ef 30%, #ecf2f7 100%);
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  background: radial-gradient(
+    circle at 20% 10%,
+    #f4e9d5 0%,
+    #f7f5ef 30%,
+    #ecf2f7 100%
+  );
   color: #0f172a;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Custom Smooth Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0d1117; /* Dark background to match app */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155; /* slate-700 - smooth grey */
+  border-radius: 5px;
+  border: 2px solid #0d1117; /* Padding effect */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569; /* slate-600 - lighter on hover */
+}
+
+/* Corner for both scrollbars */
+::-webkit-scrollbar-corner {
+  background: #0d1117;
+}
+
+html {
+  scroll-behavior: smooth;
 }
