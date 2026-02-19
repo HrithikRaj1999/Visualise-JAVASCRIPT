@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: js-visualiser-server
+    runtime: node
+    plan: free
+    autoDeployTrigger: "off"
+    rootDir: .
+    buildCommand: npm ci && npm run build -w @jsv/server
+    startCommand: npm run start -w @jsv/server
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+

@@ -38,7 +38,6 @@ export function DropZone({ id, children, className, pulse }: DropZoneProps) {
   return (
     <div
       ref={setRef}
-      id={id} // Add ID to DOM for semantic reasons (not strictly needed for registry but good practice)
       className={`transition-all duration-300 ${className} 
         ${isOver ? "ring-2 ring-yellow-400 bg-yellow-400/10" : ""}
         ${justArrived ? "ring-2 ring-emerald-400 bg-emerald-400/10 scale-[1.02]" : ""}

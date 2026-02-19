@@ -14,7 +14,14 @@
     "test:phase1": "npm run test:phase1 -w @jsv/protocol && npm run test:phase1 -w @jsv/explain",
     "test:phase2": "npm run test:phase2 -w @jsv/web",
     "test:phase3": "npm run test:phase3 -w @jsv/server",
-    "test:phase4": "npm run test:phase4 -w @jsv/web"
+    "test:phase4": "npm run test:phase4 -w @jsv/web",
+    "deploy:web": "node scripts/deploy-web.mjs",
+    "deploy:server": "node scripts/render-service.mjs deploy",
+    "deploy:server:status": "node scripts/render-service.mjs status",
+    "deploy:server:start": "node scripts/render-service.mjs start",
+    "deploy:server:stop": "node scripts/render-service.mjs stop",
+    "deploy:start": "npm run deploy:web && npm run deploy:server:start",
+    "deploy:stop": "npm run deploy:server:stop"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

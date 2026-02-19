@@ -3,6 +3,7 @@ import { Worker } from "node:worker_threads";
 import { transform } from "esbuild";
 import type { VisualizerEvent } from "@jsv/protocol";
 import ts from "typescript";
+import http from "node:http";
 
 type ClientCommand =
   | { type: "SUBSCRIBE" }
@@ -179,16 +180,18 @@ const wrapTask = (queue, label, callback) => {
   emit({ type: 'ENQUEUE_TASK', queue, taskId, label, source, ts: Date.now() });
   
   return (...args) => {
-    emit({ type: 'PHASE_ENTER', phase: queue === 'io' ? 'io' : queue, ts: Date.now() });
+    const phase = queue === 'io' ? 'io' : queue;
+    emit({ type: 'PHASE_ENTER', phase, ts: Date.now() });
     emit({ type: 'DEQUEUE_TASK', queue, taskId, ts: Date.now() });
     emit({ type: 'CALLBACK_START', taskId, label, source, ts: Date.now() });
     try {
       callback(...args);
     } finally {
       emit({ type: 'CALLBACK_END', taskId, ts: Date.now() });
-      emit({ type: 'DRAIN_MICROTASKS_START', ts: Date.now() });
-      emit({ type: 'DRAIN_MICROTASKS_END', ts: Date.now() });
-      emit({ type: 'PHASE_EXIT', phase: queue === 'io' ? 'io' : queue, ts: Date.now() });
+      // Defer phase exit so microtasks queued by this callback can run first.
+      queueMicrotask(() => {
+        emit({ type: 'PHASE_EXIT', phase, ts: Date.now() });
+      });
     }
   };
 };
@@ -197,9 +200,14 @@ const wrapMicrotask = (queue, label, callback) => {
   const id = queue + ':' + (++counter);
   const source = callback.source;
   emit({ type: 'ENQUEUE_MICROTASK', queue, id, label, source, ts: Date.now() });
-  return () => {
+  return (...args) => {
     emit({ type: 'DEQUEUE_MICROTASK', queue, id, ts: Date.now() });
-    callback();
+    emit({ type: 'CALLBACK_START', taskId: id, label, source, ts: Date.now() });
+    try {
+      callback(...args);
+    } finally {
+      emit({ type: 'CALLBACK_END', taskId: id, ts: Date.now() });
+    }
   };
 };
 
@@ -252,9 +260,7 @@ const context = {
 emit({ type: 'SCRIPT_START', ts: Date.now() });
 try {
   vm.runInNewContext(${JSON.stringify(js)}, context, { timeout: 5000 });
-  emit({ type: 'DRAIN_MICROTASKS_START', ts: Date.now() });
-  emit({ type: 'DRAIN_MICROTASKS_END', ts: Date.now() });
-  setTimeout(() => process.exit(0), 20);
+  setTimeout(() => process.exit(0), 25);
 } catch (error) {
   emit({ type: 'RUNTIME_ERROR', ts: Date.now(), message: error.message, stack: error.stack });
   process.exit(1);
@@ -274,13 +280,23 @@ function startWorker(
 }
 
 export function createServer(port = 8080) {
-  const wss = new WebSocketServer({ port });
+  const httpServer = http.createServer((req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    res.writeHead(426, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Use WebSocket protocol." }));
+  });
+  const wss = new WebSocketServer({ noServer: true });
 
-  wss.on("listening", () => {
+  httpServer.on("listening", () => {
     console.log(`[server] WebSocket listening on ws://localhost:${port}`);
+    console.log(`[server] Health check available on http://localhost:${port}/health`);
   });
 
-  wss.on("error", (error: NodeJS.ErrnoException) => {
+  httpServer.on("error", (error: NodeJS.ErrnoException) => {
     console.error("[server] Failed to start WebSocket server:", error);
     if (error.code === "EADDRINUSE") {
       console.error(
@@ -288,6 +304,12 @@ export function createServer(port = 8080) {
       );
       process.exit(1);
     }
+  });
+
+  httpServer.on("upgrade", (request, socket, head) => {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
   });
 
   wss.on("connection", (socket) => {
@@ -332,7 +354,17 @@ export function createServer(port = 8080) {
     });
   });
 
-  return wss;
+  httpServer.listen(port);
+
+  return {
+    close: (callback?: () => void) => {
+      wss.close(() => {
+        httpServer.close(() => {
+          callback?.();
+        });
+      });
+    },
+  };
 }
 
 if (process.env.NODE_ENV !== "test") {

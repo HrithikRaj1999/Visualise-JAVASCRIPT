@@ -1,0 +1,60 @@
+[
+  {
+    "type": "SCRIPT_START",
+    "ts": 1771480738413
+  },
+  {
+    "type": "ENQUEUE_TASK",
+    "queue": "timers",
+    "taskId": "timers:1",
+    "label": "setTimeout callback",
+    "source": {
+      "line": 2,
+      "col": 1
+    },
+    "ts": 1771480738414
+  },
+  {
+    "type": "PHASE_ENTER",
+    "phase": "timers",
+    "ts": 1771480738439
+  },
+  {
+    "type": "DEQUEUE_TASK",
+    "queue": "timers",
+    "taskId": "timers:1",
+    "ts": 1771480738439
+  },
+  {
+    "type": "CALLBACK_START",
+    "taskId": "timers:1",
+    "label": "setTimeout callback",
+    "source": {
+      "line": 2,
+      "col": 1
+    },
+    "ts": 1771480738439
+  },
+  {
+    "type": "CONSOLE",
+    "level": "log",
+    "args": [
+      "timeout"
+    ],
+    "ts": 1771480738439
+  },
+  {
+    "type": "CALLBACK_END",
+    "taskId": "timers:1",
+    "ts": 1771480738439
+  },
+  {
+    "type": "PHASE_EXIT",
+    "phase": "timers",
+    "ts": 1771480738439
+  },
+  {
+    "type": "SCRIPT_END",
+    "ts": 1771480738442
+  }
+]

@@ -1,123 +1,157 @@
-import { VisualizerEvent, TaskQueue, MicrotaskQueue } from "@jsv/protocol";
+import { VisualizerEvent, TaskQueue } from "@jsv/protocol";
 import { ReplayState } from "./replay";
 
-// Helper to generate IDs
-const generateId = (prefix: string) =>
-  `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
 export function tick(state: ReplayState["state"]): VisualizerEvent[] {
-  // 1. If Call Stack is not empty, pop the top frame (simulate completion)
+  // 1. If Call Stack is not empty, finish the current callback first.
   if (state.callStack.length > 0) {
     const frame = state.callStack[state.callStack.length - 1];
-    return [
+    const events: VisualizerEvent[] = [
       {
         type: "CALLBACK_END",
         ts: Date.now(),
         taskId: frame.id,
       },
     ];
+
+    // Macrotask callback finished: close active phase.
+    if (state.activeTaskId === frame.id && state.phase) {
+      events.push({
+        type: "PHASE_EXIT",
+        ts: Date.now() + 1,
+        phase: state.phase,
+      });
+    }
+
+    // Microtask drain completed.
+    if (
+      state.activeTaskId === null &&
+      state.drainingMicrotasks &&
+      state.queues.nextTick.length === 0 &&
+      state.queues.promise.length === 0
+    ) {
+      events.push({
+        type: "DRAIN_MICROTASKS_END",
+        ts: Date.now() + 1,
+      });
+    }
+
+    return events;
   }
 
-  // 1.5. If activeTaskId is set (dequeued macrotask waiting to start)
-  if (state.activeTaskId) {
-    // See previous comments about label persistence.
-  }
-
-  // 2. Microtasks
-  // Check queues: nextTick, promise
+  // 2. Microtasks: nextTick before Promise.
 
   if (state.queues.nextTick.length > 0) {
     const task = state.queues.nextTick[0];
-    return [
+    const events: VisualizerEvent[] = [];
+    if (!state.drainingMicrotasks) {
+      events.push({
+        type: "DRAIN_MICROTASKS_START",
+        ts: Date.now(),
+      });
+    }
+    events.push(
       {
         type: "DEQUEUE_MICROTASK",
-        ts: Date.now(),
+        ts: Date.now() + events.length,
         queue: "nextTick",
         id: task.id,
       },
       {
         type: "CALLBACK_START",
-        ts: Date.now() + 1,
+        ts: Date.now() + events.length + 1,
         taskId: task.id,
         label: task.label,
+        source: task.source,
       },
-      {
-        type: "FOCUS_SET",
-        ts: Date.now() + 2,
-        focus: {
-          activeBox: "STACK",
-          activeTokenId: task.id,
-          reason: "Processing nextTick",
-        },
-      },
-    ];
+    );
+    return events;
   }
 
   if (state.queues.promise.length > 0) {
     const task = state.queues.promise[0];
-    return [
+    const events: VisualizerEvent[] = [];
+    if (!state.drainingMicrotasks) {
+      events.push({
+        type: "DRAIN_MICROTASKS_START",
+        ts: Date.now(),
+      });
+    }
+    events.push(
       {
         type: "DEQUEUE_MICROTASK",
-        ts: Date.now(),
+        ts: Date.now() + events.length,
         queue: "promise",
         id: task.id,
       },
       {
         type: "CALLBACK_START",
-        ts: Date.now() + 1,
+        ts: Date.now() + events.length + 1,
         taskId: task.id,
         label: task.label,
+        source: task.source,
       },
-      {
-        type: "FOCUS_SET",
-        ts: Date.now() + 2,
-        focus: {
-          activeBox: "STACK",
-          activeTokenId: task.id,
-          reason: "Processing Promise",
-        },
-      },
-    ];
+    );
+    return events;
   }
 
-  // 3. Macrotask (Task Queue)
+  // 3. Macrotask queues.
   const macroQueues: TaskQueue[] = ["timers", "io", "check", "close"];
   for (const q of macroQueues) {
-    // Fix type error: cast q to keyof queues
     if (state.queues[q as keyof typeof state.queues].length > 0) {
       const task = state.queues[q as keyof typeof state.queues][0];
-      return [
+      const events: VisualizerEvent[] = [];
+      if (state.phase !== q) {
+        events.push({
+          type: "PHASE_ENTER",
+          ts: Date.now(),
+          phase: q,
+        });
+      }
+      events.push(
         {
           type: "DEQUEUE_TASK",
-          ts: Date.now(),
+          ts: Date.now() + events.length,
           queue: q,
           taskId: task.id,
         },
         {
           type: "CALLBACK_START",
-          ts: Date.now() + 1,
+          ts: Date.now() + events.length + 1,
           taskId: task.id,
           label: task.label,
+          source: task.source,
         },
-        {
-          type: "FOCUS_SET",
-          ts: Date.now() + 2,
-          focus: {
-            activeBox: "STACK",
-            activeTokenId: task.id,
-            reason: `Processing ${q} task`,
-          },
-        },
-      ];
+      );
+      return events;
     }
   }
 
-  // 4. Idle
-  return [
-    {
-      type: "FOCUS_SET",
-      ts: Date.now(),
-      focus: { activeBox: "IDLE", reason: "Event Loop Idle" },
-    },
-  ];
+  // 4. Idle terminal state.
+  if (state.drainingMicrotasks) {
+    return [
+      {
+        type: "DRAIN_MICROTASKS_END",
+        ts: Date.now(),
+      },
+    ];
+  }
+  if (state.phase !== null) {
+    return [
+      {
+        type: "PHASE_EXIT",
+        ts: Date.now(),
+        phase: state.phase,
+      },
+    ];
+  }
+  if (state.focus.activeBox !== "IDLE") {
+    return [
+      {
+        type: "FOCUS_SET",
+        ts: Date.now(),
+        focus: { activeBox: "IDLE", reason: "Event Loop Idle" },
+      },
+    ];
+  }
+  return [];
 }

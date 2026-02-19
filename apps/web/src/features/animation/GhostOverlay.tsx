@@ -4,6 +4,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { VisualizerEvent } from "@jsv/protocol";
 import { useRectRegistry } from "./RectRegistry";
 
+const TASK_QUEUE_TO_BOX: Record<"timers" | "io" | "check" | "close", string> = {
+  timers: "box-timers",
+  io: "box-io",
+  check: "box-check",
+  close: "box-close",
+};
+
 type GhostToken = {
   id: string;
   label: string;
@@ -63,8 +70,8 @@ export function GhostOverlay({
             sourceId = `code-line-${lastEvent.source.line}`;
           }
         }
-        targetId = "box-taskqueue";
-        label = "Task";
+        targetId = TASK_QUEUE_TO_BOX[lastEvent.queue];
+        label = lastEvent.label || "Task";
         color = "#fbbf24";
         break;
     }

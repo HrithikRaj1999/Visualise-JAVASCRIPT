@@ -1,5 +1,5 @@
 import React from "react";
-import type { ExecutionFocus } from "@jsv/protocol/src/events";
+import type { ExecutionFocus } from "@jsv/protocol";
 
 export function FocusBar({ focus }: { focus: ExecutionFocus }) {
   if (focus.activeBox === "IDLE") {
@@ -13,7 +13,7 @@ export function FocusBar({ focus }: { focus: ExecutionFocus }) {
   return (
     <div className="flex items-center gap-4 border-b border-slate-800 bg-[#0d1117]/90 backdrop-blur px-4 py-2 font-mono text-xs text-slate-400 transition-colors duration-300">
       <div className="flex items-center gap-2">
-        <span className="text-blue-400 animate-pulse">▶</span>
+        <span className="text-blue-400 animate-pulse">{">"}</span>
         <span className="font-bold text-slate-200 uppercase tracking-wider">
           {focus.activeBox}
         </span>
@@ -34,3 +34,4 @@ export function FocusBar({ focus }: { focus: ExecutionFocus }) {
     </div>
   );
 }
+
